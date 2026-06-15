@@ -11,7 +11,7 @@ def _write_session(home, sid):
     p.write_text(CC_LINE.format(n=0, sid=sid) + "\n", encoding="utf-8")
     return p
 
-def _fake_analyze(session, catalog, model, runner=None):
+def _fake_analyze(session, catalog, model, runner=None, **kwargs):
     from totalrecall.models import Finding, Evidence
     return [Finding("repeated-correction", "use pwsh not bash", 3,
                     Evidence(session.session_id, "claude-code", [0], session.ended_at,
@@ -32,7 +32,7 @@ def test_drain_loop_picks_up_item_enqueued_during_processing(home, monkeypatch):
     paths.ensure_dirs()
     p1 = _write_session(home, "s1"); queue.enqueue(str(p1))
     calls = {"n": 0}
-    def analyze_then_enqueue(session, catalog, model, runner=None):
+    def analyze_then_enqueue(session, catalog, model, runner=None, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:                         # mid-processing, a new session arrives
             p2 = _write_session(home, "s2"); queue.enqueue(str(p2))
