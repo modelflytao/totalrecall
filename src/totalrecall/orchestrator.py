@@ -8,23 +8,48 @@ from pathlib import Path
 from . import paths, config
 from .models import NormalizedSession, Finding, Evidence
 
-SKILL_PATH = Path("skills/totalrecall-analyze/SKILL.md")
+# Absolute path to the analysis skill, resolved from the installed package
+# location (src/totalrecall/orchestrator.py -> <repo>/skills/...). A relative
+# path would break when the worker runs with an arbitrary cwd (e.g. spawned by
+# the SessionEnd hook from the ended session's project dir).
+SKILL_PATH = Path(__file__).resolve().parent.parent.parent / "skills" / "totalrecall-analyze" / "SKILL.md"
 
 
-def _session_payload(s: NormalizedSession) -> dict:
+def _session_payload(s: NormalizedSession, max_input_tokens: int = 20000) -> dict:
+    # Cap the prompt size: a single huge session (e.g. a 14 MB transcript with
+    # thousands of turns) would otherwise build a multi-million-token prompt that
+    # fails or costs a fortune. Keep the most recent turns that fit the budget
+    # (friction/corrections cluster near where the user reacts).
+    budget_chars = max(2000, max_input_tokens * 4)   # ~4 chars per token
+    dicts = [{"idx": t.idx, "role": t.role, "text": (t.text or "")[:2000],
+              "tool_name": t.tool_name, "tool_status": t.tool_status}
+             for t in s.turns if not t.is_meta]
+    total = sum(len(d["text"]) for d in dicts)
+    truncated = False
+    if total > budget_chars:
+        kept: list[dict] = []
+        used = 0
+        for d in reversed(dicts):
+            tlen = len(d["text"]) + 50
+            if used + tlen > budget_chars and kept:
+                break
+            kept.append(d)
+            used += tlen
+        dicts = list(reversed(kept))
+        truncated = True
     return {
         "session_id": s.session_id, "tool": s.tool,
-        "turns": [{"idx": t.idx, "role": t.role, "text": t.text[:2000],
-                   "tool_name": t.tool_name, "tool_status": t.tool_status}
-                  for t in s.turns if not t.is_meta],
+        "turns": dicts,
         "events": [asdict(e) for e in s.events],
         "stats": asdict(s.stats),
+        "turns_truncated": truncated,
     }
 
 
-def build_prompt(session: NormalizedSession, catalog: list[dict]) -> str:
+def build_prompt(session: NormalizedSession, catalog: list[dict],
+                 max_input_tokens: int = 20000) -> str:
     skill = SKILL_PATH.read_text(encoding="utf-8") if SKILL_PATH.exists() else ""
-    payload = {"session": _session_payload(session), "catalog": catalog}
+    payload = {"session": _session_payload(session, max_input_tokens), "catalog": catalog}
     return (skill + "\n\n# INPUT\n```json\n"
             + json.dumps(payload, ensure_ascii=False) + "\n```\n"
             + "\nReturn ONLY the JSON array of findings.")
@@ -66,9 +91,9 @@ def default_runner(prompt: str, model: str, cwd: str, env: dict) -> str:
 
 
 def analyze(session: NormalizedSession, catalog: list[dict], model: str,
-            runner=default_runner) -> list[Finding]:
+            runner=default_runner, max_input_tokens: int = 20000) -> list[Finding]:
     paths.ensure_dirs()
-    prompt = build_prompt(session, catalog)
+    prompt = build_prompt(session, catalog, max_input_tokens)
     env = dict(os.environ)
     env[config.load().analysis_marker_env] = "1"
     raw_stdout = runner(prompt, model, str(paths.analysis_cwd()), env)

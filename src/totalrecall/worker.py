@@ -31,7 +31,8 @@ def process_path(path: str, cfg: config.Config) -> bool:
     extract_events(session)
     cat = catalog.build(cfg.catalog_topk, _now())
     try:
-        findings = orchestrator.analyze(session, cat, cfg.extract_model)
+        findings = orchestrator.analyze(session, cat, cfg.extract_model,
+                                        max_input_tokens=cfg.max_input_tokens)
     except Exception:
         lg.mark_pending(session.session_id or path, str(p)); lg.save()
         return False

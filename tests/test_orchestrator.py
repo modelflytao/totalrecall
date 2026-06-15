@@ -41,3 +41,27 @@ def test_sets_analysis_marker_env_and_cwd(home, monkeypatch):
     orchestrator.analyze(_sess(), [], "m", runner=runner)
     assert captured["marker"] == "1"
     assert "analysis" in captured["cwd"].replace("\\", "/")
+
+def test_skill_path_is_absolute_and_exists():
+    # Must resolve regardless of cwd (the hook-spawned worker has an arbitrary cwd).
+    assert orchestrator.SKILL_PATH.is_absolute()
+    assert orchestrator.SKILL_PATH.exists()
+
+def test_session_payload_truncates_large_session(home):
+    from totalrecall.models import NormalizedSession, Turn, Stats
+    turns = [Turn(i, "user", None, text="x" * 2000) for i in range(50)]
+    s = NormalizedSession("claude-code", "s", "/p", "main", "t", "t", False,
+                          turns=turns, events=[], stats=Stats())
+    payload = orchestrator._session_payload(s, max_input_tokens=1000)  # ~4000 char budget
+    assert payload["turns_truncated"] is True
+    assert len(payload["turns"]) < 50
+    assert payload["turns"][-1]["idx"] == 49   # keeps the most recent turns
+
+def test_session_payload_keeps_small_session(home):
+    from totalrecall.models import NormalizedSession, Turn, Stats
+    turns = [Turn(i, "user", None, text="short") for i in range(3)]
+    s = NormalizedSession("claude-code", "s", "/p", "main", "t", "t", False,
+                          turns=turns, events=[], stats=Stats())
+    payload = orchestrator._session_payload(s, max_input_tokens=20000)
+    assert payload["turns_truncated"] is False
+    assert len(payload["turns"]) == 3
