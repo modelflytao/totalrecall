@@ -1,10 +1,16 @@
 from totalrecall import reconcile, ledger, queue, paths
 
 
+def test_encoded_analysis_dir_encodes_dot(monkeypatch):
+    # Claude Code turns '.totalrecall' into '-totalrecall' (dot -> dash).
+    monkeypatch.setattr(paths, "analysis_cwd",
+                        lambda: __import__("pathlib").Path(r"C:\Users\u\.totalrecall\analysis"))
+    assert reconcile._encoded_analysis_dir() == "C--Users-u--totalrecall-analysis"
+
+
 def test_enqueues_unseen_skips_done_and_analysis(home, tmp_path, monkeypatch):
     paths.ensure_dirs()
-    import re
-    enc = re.sub(r"[:/\\]", "-", str(paths.analysis_cwd()))
+    enc = reconcile._encoded_analysis_dir()   # use the real encoding, kept in sync
     projects = tmp_path / "projects"
     (projects / "proj-a").mkdir(parents=True)
     (projects / enc).mkdir(parents=True)

@@ -58,18 +58,23 @@ def run() -> str:
         if not got:
             return "busy"
         cfg = config.load()
-        before = len(ledger.Ledger.load().done_paths())
         reconcile.run()
-        # drain-loop: keep going until the queue is truly empty before releasing the lock
+        analyzed = 0
+        # crash-safe loop: claim one job, process, then delete it. If the worker is
+        # killed (machine sleep/crash) mid-session, the job file remains and is
+        # re-processed on the next run (idempotent via the ledger) -- no bulk re-work.
         while True:
-            batch = queue.drain()
-            if not batch:
+            job = queue.claim_next()
+            if job is None:
                 break
-            for path in batch:
-                process_path(path, cfg)
+            job_file, path = job
+            if process_path(path, cfg):
+                analyzed += 1
+                # periodic synth keeps the pattern library consolidated AND small
+                # enough that the synth prompt never times out.
+                if cfg.synth_every_n_sessions > 0 and analyzed % cfg.synth_every_n_sessions == 0:
+                    synth.run(cfg)
+                    _refresh(cfg)
+            queue.complete(job_file)
         _refresh(cfg)
-        after = len(ledger.Ledger.load().done_paths())
-        n = cfg.synth_every_n_sessions
-        if n > 0 and after // n > before // n:   # crossed a multiple of N cumulatively
-            synth.run(cfg)
         return "done"

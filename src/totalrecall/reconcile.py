@@ -10,8 +10,9 @@ def claude_projects_dir() -> Path:
 
 def _encoded_analysis_dir() -> str:
     # Claude Code encodes a cwd into a project dir name by replacing ':' '\\' '/'
-    # with '-' (e.g. D:\\work\\totalrecall -> D--work-totalrecall).
-    return re.sub(r"[:/\\]", "-", str(paths.analysis_cwd()))
+    # AND '.' with '-' (e.g. C:\\Users\\u\\.totalrecall\\analysis ->
+    # C--Users-u--totalrecall-analysis -- note '.totalrecall' -> '-totalrecall').
+    return re.sub(r"[:/\\.]", "-", str(paths.analysis_cwd()))
 
 
 def run() -> int:
