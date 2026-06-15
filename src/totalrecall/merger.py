@@ -1,0 +1,63 @@
+from __future__ import annotations
+import re
+from difflib import SequenceMatcher
+from .models import Finding, Pattern
+from . import patterns_store
+
+SIM_THRESHOLD = 0.82
+
+
+def _slugify(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return (s or "pattern")[:60]
+
+
+def _similar(a: str, b: str) -> float:
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def _find_target(f: Finding, existing: list[Pattern]) -> Pattern | None:
+    if f.pattern_id:
+        for p in existing:
+            if p.id == f.pattern_id:
+                return p
+    slug = f.slug or _slugify(f.description)
+    for p in existing:
+        if p.id == slug:
+            return p
+    for p in existing:
+        if _similar(p.description, f.description) >= SIM_THRESHOLD:
+            return p
+    return None
+
+
+def _apply(p: Pattern, f: Finding, now: str) -> None:
+    if any(e.snippet_hash == f.evidence.snippet_hash for e in p.evidence):
+        return  # duplicate evidence -> do not double-count
+    p.occurrences += 1
+    p.last_seen = now
+    p.severity = max(p.severity, f.severity)
+    p.evidence.append(f.evidence)
+    if f.phase2_hint and not p.phase2_hint:
+        p.phase2_hint = f.phase2_hint
+    if p.source != f_source(f):
+        p.source = "both"
+
+
+def f_source(f: Finding) -> str:
+    return "llm"
+
+
+def merge(findings: list[Finding], now: str) -> None:
+    for f in findings:
+        existing = patterns_store.all()
+        target = _find_target(f, existing)
+        if target is None:
+            pid = f.slug or _slugify(f.description)
+            target = Pattern(
+                id=pid, title=f.description[:80], category=f.category, source="llm",
+                description=f.description, first_seen=now, last_seen=now,
+                occurrences=0, severity=f.severity, evidence=[], phase2_hint=f.phase2_hint,
+            )
+        _apply(target, f, now)
+        patterns_store.save(target)
