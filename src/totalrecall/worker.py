@@ -73,7 +73,10 @@ def run() -> str:
                 # periodic synth keeps the pattern library consolidated AND small
                 # enough that the synth prompt never times out.
                 if cfg.synth_every_n_sessions > 0 and analyzed % cfg.synth_every_n_sessions == 0:
-                    synth.run(cfg)
+                    try:
+                        synth.run(cfg)          # consolidation failure must not abort the backfill
+                    except Exception:
+                        pass
                     _refresh(cfg)
             queue.complete(job_file)
         _refresh(cfg)
