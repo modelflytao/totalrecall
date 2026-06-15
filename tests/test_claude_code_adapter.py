@@ -32,3 +32,14 @@ def test_is_analysis_session_by_cwd():
 def test_garbage_lines_skipped_without_crash():
     s = ClaudeCodeAdapter().parse(FIX / "cc_basic.jsonl")
     assert len(s.turns) >= 4  # parsed despite trailing garbage line
+
+def test_is_analysis_session_by_configured_home(home, tmp_path):
+    from totalrecall import paths
+    cwd = str(paths.analysis_cwd()).replace("\\", "/")
+    p = tmp_path / "an.jsonl"
+    p.write_text(
+        '{"type":"user","timestamp":"2026-06-10T11:00:00Z","cwd":"' + cwd +
+        '","sessionId":"a1","message":{"role":"user","content":"hi"}}\n',
+        encoding="utf-8")
+    s = ClaudeCodeAdapter().parse(p)
+    assert s.is_analysis_session is True

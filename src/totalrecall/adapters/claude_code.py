@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from ..models import NormalizedSession, Turn, Stats
+from .. import paths
 
 
 def _text_from_content(content) -> str:
@@ -51,7 +52,9 @@ class ClaudeCodeAdapter:
             session_id = o.get("sessionId") or session_id
             if o.get("cwd"):
                 cwd = o["cwd"]
-                if "/.totalrecall/analysis" in cwd.replace("\\", "/"):
+                cwd_norm = cwd.replace("\\", "/").rstrip("/")
+                analysis_root = str(paths.analysis_cwd()).replace("\\", "/").rstrip("/")
+                if cwd_norm == analysis_root or "/.totalrecall/analysis" in cwd_norm:
                     is_analysis = True
             if "gitBranch" in o:
                 git_branch = o.get("gitBranch")

@@ -57,17 +57,18 @@ def run() -> str:
         if not got:
             return "busy"
         cfg = config.load()
+        before = len(ledger.Ledger.load().done_paths())
         reconcile.run()
-        processed = 0
         # drain-loop: keep going until the queue is truly empty before releasing the lock
         while True:
             batch = queue.drain()
             if not batch:
                 break
             for path in batch:
-                if process_path(path, cfg):
-                    processed += 1
+                process_path(path, cfg)
         _refresh(cfg)
-        if processed and processed % cfg.synth_every_n_sessions == 0:
+        after = len(ledger.Ledger.load().done_paths())
+        n = cfg.synth_every_n_sessions
+        if n > 0 and after // n > before // n:   # crossed a multiple of N cumulatively
             synth.run(cfg)
         return "done"

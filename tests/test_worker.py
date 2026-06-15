@@ -50,3 +50,14 @@ def test_second_worker_exits_when_locked(home, monkeypatch):
     with try_worker_lock() as got:
         assert got is True
         assert worker.run() == "busy"               # lock held -> no-op
+
+def test_synth_fires_when_cumulative_count_crosses_n(home, monkeypatch):
+    paths.ensure_dirs()
+    paths.config_path().write_text("[limits]\nsynth_every_n_sessions = 1\n", encoding="utf-8")
+    p = _write_session(home, "s1"); queue.enqueue(str(p))
+    monkeypatch.setattr(worker.orchestrator, "analyze", _fake_analyze)
+    monkeypatch.setattr(worker.reconcile, "run", lambda: 0)
+    fired = {"n": 0}
+    monkeypatch.setattr(worker.synth, "run", lambda cfg: fired.__setitem__("n", fired["n"] + 1))
+    worker.run()
+    assert fired["n"] == 1

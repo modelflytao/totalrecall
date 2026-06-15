@@ -48,10 +48,20 @@ def _snippet_hash(session: NormalizedSession, turn_refs: list[int]) -> str:
 
 
 def default_runner(prompt: str, model: str, cwd: str, env: dict) -> str:
+    # Prompt goes via stdin: it can exceed the Windows command-line length limit.
+    # shell=True lets the npm shim (claude.cmd on Windows / claude on PATH) resolve
+    # the same way the user's shell does (CreateProcess can't launch .cmd directly).
+    cmd = f"claude -p --output-format json --model {model}"
     proc = subprocess.run(
-        ["claude", "-p", prompt, "--output-format", "json", "--model", model],
-        cwd=cwd, env=env, capture_output=True, text=True, timeout=300,
+        cmd, shell=True, input=prompt, cwd=cwd, env=env,
+        capture_output=True, text=True, timeout=300,
     )
+    if proc.returncode != 0:
+        try:
+            with paths.log_path().open("a", encoding="utf-8") as fh:
+                fh.write(f"claude runner exit {proc.returncode}: {(proc.stderr or '')[:500]}\n")
+        except Exception:
+            pass
     return proc.stdout
 
 

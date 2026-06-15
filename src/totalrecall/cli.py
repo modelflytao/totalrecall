@@ -2,7 +2,7 @@ from __future__ import annotations
 import argparse
 import sys
 from . import (hookinstall, worker, reconcile, synth, config, ledger,
-               patterns_store, hookcmd)
+               patterns_store, hookcmd, queue)
 
 
 def _cmd_status() -> int:
@@ -15,9 +15,13 @@ def _cmd_status() -> int:
 
 def _cmd_retry() -> int:
     cfg = config.load()
-    lg = ledger.Ledger.load()
-    for _sid, path in lg.pending_items():
-        worker.process_path(path, cfg)
+    with worker.try_worker_lock() as got:
+        if not got:
+            print("worker busy; pending items will be retried by the running worker")
+            return 0
+        lg = ledger.Ledger.load()
+        for _sid, path in lg.pending_items():
+            worker.process_path(path, cfg)
     return 0
 
 
@@ -38,7 +42,12 @@ def main(argv=None) -> int:
     if args.cmd == "init":
         hookinstall.init(); print("TotalRecall initialized."); return 0
     if args.cmd == "ingest":
-        worker.process_path(args.path, config.load()); return 0
+        with worker.try_worker_lock() as got:
+            if got:
+                worker.process_path(args.path, config.load())
+            else:
+                queue.enqueue(args.path)
+        return 0
     if args.cmd == "worker":
         worker.run(); return 0
     if args.cmd == "reconcile":
@@ -52,3 +61,7 @@ def main(argv=None) -> int:
     if args.cmd == "hook":
         return hookcmd.main()
     return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
