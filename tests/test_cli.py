@@ -27,3 +27,10 @@ def test_ingest_one_path(home, monkeypatch, tmp_path):
     f = tmp_path / "s.jsonl"; f.write_text("x", encoding="utf-8")
     assert cli.main(["ingest", str(f)]) == 0
     assert called["p"] == str(f)
+
+def test_ingest_refreshes_insights(home, monkeypatch, tmp_path):
+    from totalrecall import paths
+    monkeypatch.setattr(cli.worker, "process_path", lambda path, cfg: True)
+    f = tmp_path / "s.jsonl"; f.write_text("x", encoding="utf-8")
+    assert cli.main(["ingest", str(f)]) == 0
+    assert paths.insights_path().exists()   # ingest must render insights.md

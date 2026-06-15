@@ -42,9 +42,11 @@ def main(argv=None) -> int:
     if args.cmd == "init":
         hookinstall.init(); print("TotalRecall initialized."); return 0
     if args.cmd == "ingest":
+        cfg = config.load()
         with worker.try_worker_lock() as got:
             if got:
-                worker.process_path(args.path, config.load())
+                worker.process_path(args.path, cfg)
+                worker._refresh(cfg)
             else:
                 queue.enqueue(args.path)
         return 0
