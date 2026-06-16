@@ -365,7 +365,7 @@ def _ts(s):
     except (ValueError, AttributeError):
         return None
 ```
-In `_apply`, add at the END of the function (after the `source` update):
+In `_apply`, add at the END of the function (after the `source` update). **Indent at function-body level (4 spaces) — NOT nested inside the preceding `if p.source != f_source(f):` block:**
 ```python
     at, et = _ts(p.applied_at), _ts(f.evidence.ts)
     if at and et and et > at:
@@ -451,6 +451,71 @@ Expected: PASS
 ```bash
 git add src/totalrecall/catalog.py tests/test_catalog_phase2.py
 git commit -m "feat: catalog pins applied patterns so recurrence re-attributes" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Task 6b: synth protects applied patterns (no merge/delete)
+
+**Files:**
+- Modify: `src/totalrecall/synth.py`
+- Test: `tests/test_synth_phase2.py`
+
+**Why:** Phase-1 `synth` merges/deletes near-duplicate patterns over `patterns_store.all()`. If it merges away an *applied* pattern, the `applied_at`/`applied_rule`/sticky status and the stable id are lost — breaking the closed loop. Exclude applied patterns from the merge candidate set.
+
+- [ ] **Step 1: Write the failing test**
+
+`tests/test_synth_phase2.py`:
+```python
+from totalrecall import synth, patterns_store, paths, config
+from totalrecall.models import Pattern
+
+def _p(pid, applied_at=None):
+    return Pattern(pid, f"t-{pid}", "c", "llm", f"d-{pid}",
+                   "2026-06-01T00:00:00Z", "2026-06-14T00:00:00Z", 2, 3,
+                   applied_at=applied_at)
+
+def test_synth_excludes_applied_from_merge(home, monkeypatch):
+    paths.ensure_dirs()
+    patterns_store.save(_p("applied", applied_at="2026-06-10T00:00:00Z"))
+    patterns_store.save(_p("dup1"))
+    patterns_store.save(_p("dup2"))
+    seen = {}
+    def fake_ask(patterns, model):
+        seen["ids"] = {p.id for p in patterns}
+        return []   # no merges
+    monkeypatch.setattr(synth, "_ask_merges", fake_ask)
+    synth.run(config.load())
+    assert seen["ids"] == {"dup1", "dup2"}           # applied pattern not a merge candidate
+    assert patterns_store.get("applied") is not None  # untouched
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_synth_phase2.py -v`
+Expected: FAIL — `seen["ids"]` includes `"applied"`
+
+- [ ] **Step 3: Implement**
+
+In `src/totalrecall/synth.py`, in `run()`, replace the first line of the body:
+```python
+    patterns = patterns_store.all()
+```
+with:
+```python
+    patterns = [p for p in patterns_store.all() if not p.applied_at]   # protect applied patterns
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_synth_phase2.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/totalrecall/synth.py tests/test_synth_phase2.py
+git commit -m "fix: synth excludes applied patterns from merge (preserve closed-loop fields/id)" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -1190,7 +1255,19 @@ Expected: FAIL — `✅ 已解决` not in text
 
 - [ ] **Step 3: Implement**
 
-In `src/totalrecall/render.py`, `import` nothing new (uses existing `derive_status`). Inside `write`, just before the final `paths.ensure_dirs()` line, insert a Phase-2 block:
+In `src/totalrecall/render.py`, `import` nothing new (uses existing `derive_status`).
+
+First, exclude resolved/ineffective patterns from the "🔥 当前最该处理的摩擦" list — replace the existing line
+```python
+    for i, p in enumerate(patterns[:15], 1):
+```
+with:
+```python
+    _urgent = [p for p in patterns if derive_status(p, now) not in ("resolved", "ineffective")]
+    for i, p in enumerate(_urgent[:15], 1):
+```
+
+Then, just before the final `paths.ensure_dirs()` line, insert a Phase-2 block:
 ```python
     # --- Phase 2: applied-rule outcomes ---
     applied = [p for p in patterns if p.applied_at]
@@ -1362,7 +1439,7 @@ git commit -m "docs: README Phase 2 section" -m "Co-Authored-By: Claude Opus 4.8
 **Spec coverage (spec §→task):**
 - §4.1 proposer (candidate select + claude -p draft + proposals.md) → Tasks 8, 9, 10.
 - §4.2 applier (managed rules file, idempotent marker, @import + backup, pattern writeback, reject, stale) → Tasks 11, 12.
-- §4.3 verifier (ineffective on recurrence incl. override-resolved; resolved on no-recurrence; pin applied into catalog) → Tasks 5, 4, 6.
+- §4.3 verifier (ineffective on recurrence incl. override-resolved; resolved on no-recurrence; pin applied into catalog; **synth protects applied patterns**) → Tasks 5, 4, 6, **6b**.
 - §5.1 Proposal model + proposals.json → Task 7. §5.2 Pattern fields + sticky status → Tasks 1, 4. §5.3 rules file + @import → Task 11. §5.4 proposals.md → Task 10.
 - §6 data flow → Tasks 10 (propose), 12 (apply), 5+4 (verify). §7 state machine → Tasks 4, 5.
 - §8 CLI → Task 14. §9 config → Task 2. §10 idempotency/backup/**worker-lock**/stale/authority → Tasks 11, 12. §11 testing → every task TDD. §12 scope → Tasks 1–15 (CLAUDE.md only; manual; single target).
@@ -1372,4 +1449,6 @@ git commit -m "docs: README Phase 2 section" -m "Co-Authored-By: Claude Opus 4.8
 
 **Type consistency:** `Proposal(id, pattern_id, target_file, rule_text, rationale, status, created_at, applied_at)` identical across Tasks 7/10/11/12/14. `proposer.propose(top_n, min_occ, now, model, runner=...)` and `proposer.select_candidates(top_n, min_occ, now)` match their callers (Task 14, Task 10). `applier.write_rule(path, prop, occ, last)`, `applier.ensure_import(path, filename)`, `applier.apply(ids, cfg, now)`, `applier.reject(ids)` match Tasks 11/12/14. `Pattern.applied_at/applied_rule` (Task 1) used in Tasks 4/5/6/12/13. `derive_status(p, now, resolved_after_days=14)` (Task 4) called by render (Task 13, default arg) — consistent.
 
-**Deferred (intentional, logged):** project-level CLAUDE.md / memory routing, skills/subagent generation, automatic propose/apply — all out of MVP scope per spec §12. The `propose` CLI uses `cfg.synth_model` (Sonnet) for drafting quality.
+**Deferred (intentional, logged):** project-level CLAUDE.md / memory routing, skills/subagent generation, automatic propose/apply, and **auto-re-proposing an `ineffective` pattern** (MVP terminal state — user manually edits the managed rule block; re-propose needs proposal reset + rule-block replacement, future work) — all out of MVP scope per spec §12. `select_candidates` therefore takes only `active && not applied_at`. The `propose` CLI uses `cfg.synth_model` (Sonnet) for drafting quality.
+
+**Review fixes folded in (this revision):** synth-protects-applied (Task 6b, hole #2/#3), terminal-`ineffective` scoping (spec §7/§12, hole #1), top-15 excludes resolved/ineffective (Task 13 minor), Task 5 indentation note, @import co-location constraint (spec §10).
