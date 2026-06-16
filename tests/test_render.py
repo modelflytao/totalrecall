@@ -25,3 +25,16 @@ def test_render_empty_store(home):
     paths.ensure_dirs()
     render.write(now=NOW, n_sessions=0, n_projects=0)
     assert paths.insights_path().exists()
+
+def test_render_recurring_section_excludes_singletons(home):
+    paths.ensure_dirs()
+    patterns_store.save(_p("recurs", 5))
+    patterns_store.save(_p("oneoff", 1))
+    render.write(now=NOW, n_sessions=10, n_projects=2)
+    text = paths.insights_path().read_text(encoding="utf-8")
+    assert "🔁" in text
+    recurring_section = text.split("🔁")[1].split("\n## ")[0]   # the 🔁 section only
+    assert "Title recurs" in recurring_section
+    assert "Title oneoff" not in recurring_section            # singleton excluded here
+    assert "1 个一次性" in text                                # singleton count noted
+    assert "反复出现(≥2次) 1" in text                          # stats line
