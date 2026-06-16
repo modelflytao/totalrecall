@@ -21,9 +21,19 @@ def test_enqueues_unseen_skips_done_and_analysis(home, tmp_path, monkeypatch):
     lg = ledger.Ledger.load(); lg.mark_done("s2", done); lg.save()
     monkeypatch.setattr(reconcile, "claude_projects_dir", lambda: projects)
 
-    n = reconcile.run()
+    n = reconcile.run(recent_seconds=0)   # don't skip fresh test files
     queued = set(queue.drain())
     assert str(new) in queued
     assert str(done) not in queued
     assert str(skip) not in queued
     assert n == 1
+
+
+def test_skips_in_progress_recently_modified(home, tmp_path, monkeypatch):
+    paths.ensure_dirs()
+    projects = tmp_path / "projects"; (projects / "p").mkdir(parents=True)
+    active = projects / "p" / "active.jsonl"; active.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(reconcile, "claude_projects_dir", lambda: projects)
+    # default recent window: a just-written (in-progress) transcript is skipped
+    assert reconcile.run() == 0
+    assert queue.size() == 0
