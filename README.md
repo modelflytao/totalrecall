@@ -25,5 +25,13 @@ Self-produced analysis sessions are excluded; crashed sessions are caught by `re
 
 `~/.totalrecall/config.toml` — models (default Sonnet), synth cadence, catalog top-K, sources.
 
-Phase 1 = insights only. Phase 2 (planned) turns high-strength patterns into proposed
-skill / CLAUDE.md / agent edits.
+Phase 1 = insights only.
+
+## Phase 2 — rule proposals (closed loop)
+
+`totalrecall propose` drafts CLAUDE.md rules from your top recurring friction →
+review `~/.totalrecall/proposals.md` → `totalrecall apply <id…>` writes them to a
+managed `~/.claude/totalrecall-rules.md` (`@`-imported once into CLAUDE.md, backed up).
+The verifier then marks each applied pattern **resolved** (no recurrence in N days) or
+**ineffective** (recurs after apply) — shown in `insights.md`. `totalrecall reject <id…>`
+declines a draft. Commands: `propose` · `apply` · `reject` · `proposals`.
