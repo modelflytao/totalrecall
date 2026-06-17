@@ -57,7 +57,7 @@ def _merge_into(keep_id: str, dup_id: str) -> None:
 
 
 def run(cfg: config.Config) -> None:
-    patterns = patterns_store.all()
+    patterns = [p for p in patterns_store.all() if not p.applied_at]   # protect applied patterns
     if not patterns:
         return
     for group in _ask_merges(patterns, cfg.synth_model):
