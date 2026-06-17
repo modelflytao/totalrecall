@@ -1,8 +1,16 @@
 from __future__ import annotations
 import re
+from datetime import datetime
 from difflib import SequenceMatcher
 from .models import Finding, Pattern
 from . import patterns_store
+
+
+def _ts(s):
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
 
 SIM_THRESHOLD = 0.82
 
@@ -42,6 +50,9 @@ def _apply(p: Pattern, f: Finding, now: str) -> None:
         p.phase2_hint = f.phase2_hint
     if p.source != f_source(f):
         p.source = "both"
+    at, et = _ts(p.applied_at), _ts(f.evidence.ts)
+    if at and et and et > at:
+        p.status = "ineffective"   # recurred after the fix was applied (overrides resolved)
 
 
 def f_source(f: Finding) -> str:
