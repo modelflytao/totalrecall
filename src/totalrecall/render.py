@@ -16,7 +16,8 @@ def write(now: datetime, n_sessions: int, n_projects: int) -> None:
     lines.append("## 🔥 当前最该处理的摩擦 (按 strength)")
     if not patterns:
         lines.append("_(还没有累积到摩擦模式)_")
-    for i, p in enumerate(patterns[:15], 1):
+    _urgent = [p for p in patterns if derive_status(p, now) not in ("resolved", "ineffective")]
+    for i, p in enumerate(_urgent[:15], 1):
         date = p.last_seen[:10]
         lines.append(f"{i}. **{p.title}** — {p.category} · 出现 {p.occurrences} 次 · 最近 {date}")
         lines.append(f"   {p.description}")
@@ -52,6 +53,22 @@ def write(now: datetime, n_sessions: int, n_projects: int) -> None:
         lines.append("_(暂无)_")
     for p in hints:
         lines.append(f"- **{p.title}** (×{p.occurrences}) → {p.phase2_hint}")
+
+    # --- Phase 2: applied-rule outcomes ---
+    applied = [p for p in patterns if p.applied_at]
+    if applied:
+        buckets = {"resolved": [], "ineffective": [], "pending": []}
+        for p in applied:
+            st = derive_status(p, now)
+            buckets.get(st if st in ("resolved", "ineffective") else "pending").append(p)
+        lines.append("")
+        lines.append("## 🔧 Phase 2 — 已应用规则的效果")
+        for key, head in (("resolved", "✅ 已解决"), ("pending", "⏳ 已应用待验证"),
+                          ("ineffective", "⚠️ 修复无效")):
+            ps = buckets[key]
+            lines.append(f"### {head} ({len(ps)})")
+            for p in ps:
+                lines.append(f"- **{p.title}** — 规则: {p.applied_rule or '(?)'}")
 
     paths.ensure_dirs()
     paths.insights_path().write_text("\n".join(lines) + "\n", encoding="utf-8")
