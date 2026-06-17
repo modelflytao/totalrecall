@@ -28,6 +28,14 @@ def insights_path() -> Path:
     return state_dir() / "insights.md"
 
 
+def proposals_path() -> Path:
+    return state_dir() / "proposals.json"
+
+
+def proposals_md_path() -> Path:
+    return state_dir() / "proposals.md"
+
+
 def config_path() -> Path:
     return state_dir() / "config.toml"
 
