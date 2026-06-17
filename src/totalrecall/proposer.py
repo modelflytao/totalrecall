@@ -48,7 +48,9 @@ def _build_prompt(pattern, existing_rules: str, claude_md_sample: str) -> str:
             + "\n```\n\nReturn ONLY the JSON object.")
 
 
-def _extract_json_object(text: str):
+def _extract_json_object(text):
+    if not isinstance(text, str):
+        return None
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end < start:
         return None

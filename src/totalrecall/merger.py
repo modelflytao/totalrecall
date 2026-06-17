@@ -50,7 +50,7 @@ def _apply(p: Pattern, f: Finding, now: str) -> None:
         p.phase2_hint = f.phase2_hint
     if p.source != f_source(f):
         p.source = "both"
-    at, et = _ts(p.applied_at), _ts(f.evidence.ts)
+    at, et = _ts(p.applied_at), (_ts(f.evidence.ts) or _ts(now))
     if at and et and et > at:
         p.status = "ineffective"   # recurred after the fix was applied (overrides resolved)
 

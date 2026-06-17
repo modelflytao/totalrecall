@@ -28,3 +28,12 @@ def test_no_change_if_recurrence_before_apply(home):
     patterns_store.save(_applied_pattern("2026-06-30T00:00:00Z"))
     merger.merge([_finding("2026-06-15T00:00:00Z", "h3")], now="2026-06-15T00:00:00Z")
     assert patterns_store.get("pwsh").status == "active"
+
+def test_ineffective_when_evidence_ts_missing_uses_now_fallback(home):
+    # recurred transcript lacks timestamps -> evidence ts None -> fall back to `now`
+    paths.ensure_dirs()
+    patterns_store.save(_applied_pattern("2026-06-10T00:00:00Z"))
+    f = Finding("repeated-correction", "again", 3,
+                Evidence("s9", "claude-code", [2], None, "hX"), pattern_id="pwsh")
+    merger.merge([f], now="2026-06-20T00:00:00Z")   # now > applied_at
+    assert patterns_store.get("pwsh").status == "ineffective"

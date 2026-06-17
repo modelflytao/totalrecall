@@ -29,3 +29,10 @@ def test_ensure_import_creates_missing_claude_md(tmp_path):
     claude_md = tmp_path / "CLAUDE.md"
     assert applier.ensure_import(claude_md, "totalrecall-rules.md") is True
     assert "@totalrecall-rules.md" in claude_md.read_text(encoding="utf-8")
+
+def test_ensure_import_full_line_match_avoids_substring_collision(tmp_path):
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text("@totalrecall-rules.md.disabled\n", encoding="utf-8")  # NOT a real import
+    assert applier.ensure_import(claude_md, "totalrecall-rules.md") is True
+    assert any(ln.strip() == "@totalrecall-rules.md"
+               for ln in claude_md.read_text(encoding="utf-8").splitlines())

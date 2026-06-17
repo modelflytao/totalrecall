@@ -31,7 +31,7 @@ def ensure_import(claude_md_path, rules_filename: str) -> bool:
     claude_md_path = Path(claude_md_path)
     text = claude_md_path.read_text(encoding="utf-8") if claude_md_path.exists() else ""
     line = f"@{rules_filename}"
-    if line in text:
+    if any(ln.strip() == line for ln in text.splitlines()):   # full-line match (avoid @x.md.disabled collision)
         return False
     if claude_md_path.exists():
         backup = claude_md_path.with_name(claude_md_path.name + ".bak-totalrecall")
