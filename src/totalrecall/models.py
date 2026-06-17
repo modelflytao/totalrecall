@@ -79,6 +79,8 @@ class Pattern:
     evidence: list[Evidence] = field(default_factory=list)
     status: str = "active"         # active|fading|resolved
     phase2_hint: Optional[str] = None
+    applied_at: Optional[str] = None       # when a Phase-2 rule was applied for this pattern
+    applied_rule: Optional[str] = None     # the rule text that was written
 
 
 def evidence_from_dict(d: dict) -> Evidence:
@@ -105,4 +107,5 @@ def pattern_from_dict(d: dict) -> Pattern:
         occurrences=int(d["occurrences"]), severity=int(d.get("severity", 1)),
         evidence=[evidence_from_dict(e) for e in d.get("evidence", [])],
         status=d.get("status", "active"), phase2_hint=d.get("phase2_hint"),
+        applied_at=d.get("applied_at"), applied_rule=d.get("applied_rule"),
     )
