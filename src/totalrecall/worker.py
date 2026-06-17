@@ -2,12 +2,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from . import (queue, ledger, config, catalog, merger, render, reconcile,
-               orchestrator, paths, synth)
-from .adapters.claude_code import ClaudeCodeAdapter
-from .events import extract_events
+               orchestrator, paths, synth, adapters)
 from .locking import try_worker_lock
-
-_ADAPTER = ClaudeCodeAdapter()
 
 
 def _now() -> datetime:
@@ -24,11 +20,10 @@ def process_path(path: str, cfg: config.Config) -> bool:
     p = Path(path)
     if not p.exists() or not lg.is_new(p):
         return False
-    session = _ADAPTER.parse(p)
+    session = adapters.for_path(p).parse(p)
     if session.is_analysis_session:                 # ingest-layer self-exclusion
         lg.mark_done(session.session_id or path, p); lg.save()
         return False
-    extract_events(session)
     cat = catalog.build(cfg.catalog_topk, _now())
     try:
         findings = orchestrator.analyze(session, cat, cfg.extract_model,

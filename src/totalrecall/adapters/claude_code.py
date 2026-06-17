@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from ..models import NormalizedSession, Turn, Stats
 from .. import paths
+from ..events import extract_events
 
 
 def _text_from_content(content) -> str:
@@ -96,9 +97,10 @@ class ClaudeCodeAdapter:
                     turns.append(Turn(idx, "user", ts, text=txt, is_meta=False,
                                       is_sidechain=is_side)); idx += 1
 
-        stats = Stats(n_turns=len(turns))
-        return NormalizedSession(
+        session = NormalizedSession(
             tool=self.tool, session_id=session_id, cwd=cwd, git_branch=git_branch or None,
             started_at=started_at, ended_at=ended_at, is_analysis_session=is_analysis,
-            turns=turns, events=[], stats=stats,
+            turns=turns, events=[], stats=Stats(n_turns=len(turns)),
         )
+        extract_events(session)   # populate A-class events + stats (was done by the worker)
+        return session
