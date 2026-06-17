@@ -35,3 +35,12 @@ managed `~/.claude/totalrecall-rules.md` (`@`-imported once into CLAUDE.md, back
 The verifier then marks each applied pattern **resolved** (no recurrence in N days) or
 **ineffective** (recurs after apply) — shown in `insights.md`. `totalrecall reject <id…>`
 declines a draft. Commands: `propose` · `apply` · `reject` · `proposals`.
+
+## Multi-tool: Codex
+
+Set `codex = true` under `[sources]` in `~/.totalrecall/config.toml` to also learn from
+OpenAI Codex CLI sessions (`~/.codex/sessions/.../rollout-*.jsonl`). Codex has no SessionEnd
+hook, so its sessions are picked up by `reconcile` — i.e. the next time any `totalrecall worker`
+runs (after a Claude Code session ends, or manually). To analyze Codex history immediately,
+run `totalrecall reconcile` then `totalrecall worker`. Friction from Codex sessions appears in
+`insights.md` with `tool=codex` evidence, in the same pattern library as Claude Code.
