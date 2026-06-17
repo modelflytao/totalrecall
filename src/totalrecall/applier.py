@@ -1,7 +1,10 @@
 from __future__ import annotations
 import os
+from datetime import datetime
 from pathlib import Path
 from .proposals_store import Proposal
+from . import patterns_store, proposals_store
+from .locking import try_worker_lock
 
 
 def _marker(pattern_id: str) -> str:
@@ -37,3 +40,44 @@ def ensure_import(claude_md_path, rules_filename: str) -> bool:
     sep = "" if (text == "" or text.endswith("\n")) else "\n"
     claude_md_path.write_text(text + sep + line + "\n", encoding="utf-8")
     return True
+
+
+def apply(ids, cfg, now: datetime) -> int:
+    """Apply drafted proposals: write rule, inject import, record on Pattern.
+    Acquires the worker lock to avoid racing the background worker's pattern writes."""
+    rules_path = Path(os.path.expanduser(cfg.rules_file))
+    claude_md = Path(os.path.expanduser(cfg.claude_md))
+    applied = 0
+    with try_worker_lock() as got:
+        if not got:
+            raise RuntimeError("worker busy; try again shortly")
+        for pid in ids:
+            prop = proposals_store.get(pid)
+            if not prop or prop.status != "drafted":
+                continue
+            pat = patterns_store.get(prop.pattern_id)
+            if pat is None:                       # synth merged/removed it
+                prop.status = "stale"
+                proposals_store.upsert(prop)
+                continue
+            write_rule(rules_path, prop, occ=pat.occurrences, last=pat.last_seen[:10])
+            ensure_import(claude_md, rules_path.name)
+            pat.applied_at = now.isoformat()
+            pat.applied_rule = prop.rule_text
+            patterns_store.save(pat)
+            prop.status = "applied"
+            prop.applied_at = now.isoformat()
+            proposals_store.upsert(prop)
+            applied += 1
+    return applied
+
+
+def reject(ids) -> int:
+    n = 0
+    for pid in ids:
+        prop = proposals_store.get(pid)
+        if prop and prop.status == "drafted":
+            prop.status = "rejected"
+            proposals_store.upsert(prop)
+            n += 1
+    return n
