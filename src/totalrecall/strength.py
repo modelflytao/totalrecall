@@ -20,7 +20,11 @@ def strength(p: Pattern, now: datetime) -> float:
     return p.occurrences * recency * (p.severity / 5.0)
 
 
-def derive_status(p: Pattern, now: datetime) -> str:
-    if p.status == "resolved":
-        return "resolved"
+def derive_status(p: Pattern, now: datetime, resolved_after_days: int = 14) -> str:
+    if p.status in ("resolved", "ineffective"):
+        return p.status                       # sticky stored statuses
+    if p.applied_at:
+        recurred = any(e.ts and _parse(e.ts) > _parse(p.applied_at) for e in p.evidence)
+        if not recurred and _days_since(p.applied_at, now) >= resolved_after_days:
+            return "resolved"
     return "fading" if _days_since(p.last_seen, now) > FADING_DAYS else "active"
