@@ -1,0 +1,12 @@
+{"timestamp":"2026-06-13T14:40:56Z","type":"session_meta","payload":{"id":"cdx-001","cwd":"D:/work/demo","cli_version":"1.0","base_instructions":"sys"}}
+{"timestamp":"2026-06-13T14:41:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"use PowerShell not bash"}]}}
+{"timestamp":"2026-06-13T14:41:05Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok using PowerShell"}]}}
+{"timestamp":"2026-06-13T14:41:06Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":\"ls\"}","call_id":"c1"}}
+{"timestamp":"2026-06-13T14:41:07Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"a.py b.py"}}
+{"timestamp":"2026-06-13T14:41:08Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"system note"}]}}
+{"timestamp":"2026-06-13T14:41:10Z","type":"response_item","payload":{"type":"patch_apply_end","call_id":"c2","success":true,"status":"completed","changes":{"D:/work/demo/a.py":{"type":"update","content":"x"}}}}
+{"timestamp":"2026-06-13T14:41:11Z","type":"response_item","payload":{"type":"patch_apply_end","call_id":"c3","success":true,"status":"completed","changes":{"D:/work/demo/a.py":{"type":"update","content":"y"}}}}
+{"timestamp":"2026-06-13T14:41:12Z","type":"response_item","payload":{"type":"patch_apply_end","call_id":"c4","success":true,"status":"completed","changes":{"D:/work/demo/a.py":{"type":"update","content":"z"}}}}
+{"timestamp":"2026-06-13T14:41:13Z","type":"response_item","payload":{"type":"patch_apply_end","call_id":"c5","success":false,"status":"failed","changes":{"D:/work/demo/b.py":{"type":"update","content":"w"}}}}
+{"timestamp":"2026-06-13T14:41:20Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t1","reason":"user_interrupt"}}
+not-json-garbage
