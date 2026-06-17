@@ -15,6 +15,11 @@ class Config:
         "claude_code": True, "codex": False, "opencode": False})
     store_snippets: bool = False
     analysis_marker_env: str = "TOTALRECALL_ANALYSIS"
+    propose_top_n: int = 10
+    propose_min_occ: int = 3
+    resolved_after_days: int = 14
+    rules_file: str = "~/.claude/totalrecall-rules.md"
+    claude_md: str = "~/.claude/CLAUDE.md"
 
 
 def load() -> Config:
@@ -34,6 +39,12 @@ def load() -> Config:
     cfg.store_snippets = data.get("privacy", {}).get("store_snippets", cfg.store_snippets)
     cfg.analysis_marker_env = data.get("internal", {}).get(
         "analysis_marker_env", cfg.analysis_marker_env)
+    p2 = data.get("phase2", {})
+    cfg.propose_top_n = p2.get("propose_top_n", cfg.propose_top_n)
+    cfg.propose_min_occ = p2.get("propose_min_occ", cfg.propose_min_occ)
+    cfg.resolved_after_days = p2.get("resolved_after_days", cfg.resolved_after_days)
+    cfg.rules_file = p2.get("rules_file", cfg.rules_file)
+    cfg.claude_md = p2.get("claude_md", cfg.claude_md)
     return cfg
 
 
@@ -54,4 +65,10 @@ def default_toml() -> str:
         "store_snippets = false\n\n"
         "[internal]\n"
         'analysis_marker_env = "TOTALRECALL_ANALYSIS"\n'
+        "\n[phase2]\n"
+        "propose_top_n = 10\n"
+        "propose_min_occ = 3\n"
+        "resolved_after_days = 14\n"
+        'rules_file = "~/.claude/totalrecall-rules.md"\n'
+        'claude_md  = "~/.claude/CLAUDE.md"\n'
     )
