@@ -77,7 +77,9 @@ totalrecall sync-opencode (新)                    现有文件管线(不改)
 {"type":"tool","ts":<iso>,"name":<tool>,"status":<state.status>}
 {"type":"patch","ts":<iso>,"files":[<路径>...]}
 ```
-- 时间戳:epoch ms → ISO UTC(与 CC/Codex 一致,闭环时间比较才正确)。
+- 时间戳:epoch ms → **带时区的 ISO UTC**(`datetime.fromtimestamp(ms/1000, tz=timezone.utc).isoformat()`,
+  产出含 `+00:00`)。**必须 tz-aware**:否则 merger `_ts`/闭环/strength 把 naive 与 aware 混比会抛异常(修正 M5)。
+  实现期加断言:导出行的 ts 含时区偏移。
 - 一条 message 的多个 `text` part 拼接成该轮文本;`tool`/`patch` part 各成一行。
 - 顺序:按 message.time_created,再按 part.time_created。
 
@@ -87,17 +89,33 @@ totalrecall sync-opencode (新)                    现有文件管线(不改)
 - `tool="opencode"`;`session_id`/`cwd`/`started_at`/`ended_at` 取自 `meta` 行;`git_branch=None`;`is_analysis_session=False`(恒)。
 - 轮次:`text` role user/assistant → user/assistant 轮次;`tool` → tool 轮次(tool_name=name,tool_status= "error" if status=="error" else "ok")。
 - A 类事件/stats:`tool` status=="error" → tool_error(n_tool_errors);`patch` 的每个 file → n_edits,同文件累计 ≥3 → churn 事件;duration = 尾-首 ts。
+- `tool` status=="running"(进行中)→ 当 "ok" 记 tool 轮次,**不计 error**(修正 M1)。
 - (OpenCode 无显式 interrupt 事件;MVP 不做。)
+
+**重分析去重(修正 I1 —— 跨来源通用改进)**:活跃 OpenCode 会话长大后每次 sync 都会重导→重分析,
+若按内容 snippet_hash 去重,新一轮 finding 的 hash 不同 → 同一会话的 occurrences 被**重复累加**、虚高。
+修正:`merger._apply` 对一个 Pattern 追加证据时,去重键从"仅 snippet_hash"改为 **也按 `session_id` 去重**——
+即同一会话对同一 Pattern 只贡献一次 occurrence(occurrences = 该模式出现过的**不同会话数**)。
+这正是之前手动清理计数时采用的语义。对 CC/Codex 同样正确(重分析罕见,正常情况行为不变),merger 层统一修。
+实现期加回归测试:同一 session_id 的两个 finding(不同 snippet_hash)并入同一 Pattern → occurrences 只 +1。
 
 ## 7. opencode_export 模块
 
 - `opencode_db_path()` → `~/.local/share/opencode/opencode.db`。
-- **WAL 安全读取**:把 `opencode.db`(+`-wal`+`-shm`)复制到临时目录,以读写方式打开(触发 WAL 合并),
-  查询后丢弃临时副本——绝不写用户的库。
-- 对每个 `session`(可选过滤 `parent_id IS NULL` 只导出顶层会话,或全导;MVP 全导),重建 message+part →
-  写 `opencode-cache/<sid>.jsonl`。
-- **增量导出**:若缓存文件已存在且 session.time_updated 未变(存进文件 meta 或比对 mtime),跳过重写
-  → 避免每次全量重导。`sync-opencode` 返回导出/更新的会话数。
+- **WAL 安全 + 一致快照读取(修正 I3)**:**不手工复制 db+wal+shm**(复制顺序不一致会导致 .db 与 -wal 撕裂、
+  salt 不匹配而静默读到旧数据)。改用 **SQLite 一致性快照**:以 `mode=ro` 打开原库,用 `Connection.backup()`
+  把事务一致的快照(含 WAL)备份到临时文件,再查询临时文件;用完删临时文件。**全程只读原库**。
+- 对每个 `session`(MVP 全导,含子会话 `parent_id` 非空者),重建 message+part → 写 `opencode-cache/<sid>.jsonl`。
+- **增量导出(修正 C1 —— 关键)**:**不以 `session.time_updated` 作为单会话是否变更的判据**。
+  实测 38 个会话的 part 在 `time_updated` 之后仍流入(最多晚 ~15.5 分钟),用它会把流式中的会话**永久截断**。
+  做法:① **全局水位探测**(廉价):`SELECT max(time_updated) FROM session` 与持久化的上次水位比对,
+  无变化 → **整个 sync 立即返回**(全局 max 会被最近触碰的会话顶上来,可靠);② 若有变化,
+  **逐会话全部重导**(368 个小文件,导出成本远低于一次 LLM 分析)——**用 ledger 的 path+hash 作为唯一去重权威**:
+  内容没变 → hash 不变 → ledger 跳过;内容变了(会话长大)→ hash 变 → 重新分析。export 自己不猜 staleness。
+- **孤儿缓存 GC(修正 C2)**:导出后,`SELECT id FROM session` 得到现存会话集,**删除 `opencode-cache/` 里
+  sid 不在该集合的 `<sid>.jsonl`**(OpenCode 可删除/归档会话,否则缓存文件残留 → 被反复当 stale 分析)。
+- **持久化水位**:把"上次 sync 的全局 max time_updated"存进 `~/.totalrecall/opencode-sync.json`(不靠缓存文件 mtime 反推)。
+- `sync-opencode` 返回导出/更新/删除的会话数。
 - in-progress 安全:reconcile 的 mtime 跳过对缓存文件天然生效(刚导出的会话静置 >120s 才分析)。
 
 ## 8. 适配器路由 / reconcile / config / paths
@@ -112,11 +130,14 @@ totalrecall sync-opencode (新)                    现有文件管线(不改)
 
 - **启用**:config `sources.opencode=true`。
 - **导出 + 分析**:`totalrecall sync-opencode`(DB→缓存)→ `totalrecall reconcile`(缓存→队列)→ `totalrecall worker`(分析)。
-- **worker 内联 sync 的鲁棒性约束**:`worker.run()` 在 reconcile 前,若 `sources.opencode` 开,**先跑增量 sync**——
-  但 sync 必须**轻量且容错**:① 先用一条 `SELECT max(time_updated) FROM session` 之类的廉价探测,
-  与上次 sync 记录的水位比对,**无变更则立即返回**(不复制 DB);② 整个 sync 包在 try/except 里,
-  **失败静默**(记日志),绝不让 OpenCode 的 DB 问题拖垮/阻断对 CC/Codex 会话的处理。
-  首次全量导出(368 会话)较重 → 由**手动 `sync-opencode`** 承担,不放进会话结束热路径。
+- **worker 内联 sync 的鲁棒性约束(修正 I2)**:`worker.run()` 整体在 `try_worker_lock()` 内运行。
+  内联 sync 放在 reconcile 前,但必须:
+  ① **强制廉价全局探测先行**:`SELECT max(time_updated) FROM session` 与**持久化水位**(`opencode-sync.json`)比对,
+     无变化 → 立即返回,**绝不触发 backup 快照**(避免在持锁时做 200MB+ 的 DB I/O);
+  ② 整个 sync 包 try/except,**失败静默**(记日志),OpenCode 的 DB 问题绝不拖垮/阻断 CC/Codex 处理;
+  ③ 热路径本身已天然安全:SessionEnd hook 是 detached spawn worker、立即返回,DB 工作永不阻塞用户会话结束。
+  首次**全量导出(368 会话)**较重 → 只由**手动 `sync-opencode`** 承担,不进会话结束触发的 worker 热路径。
+  (注:持锁期间的快照仅在确有变更时发生且单实例串行;偶发数秒可接受,已用廉价探测严格门控。)
 - 想立刻分析:手动 `sync-opencode && reconcile && worker`。
 
 ## 10. 测试
@@ -132,9 +153,10 @@ totalrecall sync-opencode (新)                    现有文件管线(不改)
 ## 11. MVP 范围
 
 **做:**
-- ✅ opencode_export(WAL 安全读 DB,重建会话,导出 `<sid>.jsonl`,增量跳过未变)+ CLI `sync-opencode`
-- ✅ OpenCodeAdapter(导出格式 → NormalizedSession,含 tool_error/edit/churn)
-- ✅ for_path 加 OpenCode 路由;reconcile 加 opencode 来源;worker.run 开头按需 sync
+- ✅ opencode_export(SQLite `backup()` 一致快照读,重建会话,导出 `<sid>.jsonl`,全局水位探测短路,孤儿缓存 GC)+ CLI `sync-opencode`
+- ✅ OpenCodeAdapter(导出格式 → NormalizedSession,含 tool_error/edit/churn,tz-aware ts)
+- ✅ for_path 加 OpenCode 路由;reconcile 加 opencode 来源;worker.run 开头按需(廉价探测门控)sync
+- ✅ merger 证据按 session_id 去重(修 I1,跨来源通用)
 - ✅ 回填现有 368 个 OpenCode 会话(启用后运维步骤)
 
 **不做(本期之外):**
@@ -143,14 +165,21 @@ totalrecall sync-opencode (新)                    现有文件管线(不改)
 - ❌ 监听 DB 变更做实时触发(靠 sync+reconcile 机会式)
 - ❌ subtask/子会话特殊处理(MVP 顶层与子会话都按各自 session 导出)
 
-## 12. 风险与未决(实现期确认)
+## 12. 风险与未决(鲁棒性审查已解决的项 + 实现期确认)
 
-1. **part 的 tool/patch 字段细节**:`state.status` 的全部取值(error 之外)、`patch.files` 的确切结构(已核实为路径字符串列表)——以临时 DB fixture + 真实抽样核实。
-2. **WAL 合并副本**:复制 db+wal+shm 后以读写打开会就地 checkpoint 临时副本(不碰原库);需确认临时副本可写、用完清理。
-3. **会话量/性能**:368 会话、55k parts;export 全量首次稍重,但增量后只导变更;查询按 session_id 索引。
-4. **session.directory 缺失**:个别会话可能无 directory → cwd 置 ""。
-5. **回填触发**:启用后首次需 `sync-opencode`(全量导出 368)+ `reconcile` + `worker`;成本 ~368 次分析(可临时用 Haiku)。
-6. **epoch 时区**:OpenCode 时间是 epoch ms(UTC) → ISO UTC 转换需正确,闭环/strength 比较才对。
+**鲁棒性审查(opus,基于本机 207MB 真实库)已解决并入设计:**
+- **C1**(已修 §7):`session.time_updated` 非可靠变更键(38 会话 part 晚于它达 ~15.5 分钟)→ 改为全局水位探测 + ledger-hash 唯一去重。
+- **C2**(已修 §7):删除/归档会话留孤儿缓存 → 导出后按现存 session 集 GC 缓存文件。
+- **I1**(已修 §6):重导长大会话致 occurrences 虚高 → merger 证据按 session_id 去重。
+- **I2**(已修 §9):内联 sync 持锁做重 I/O → 强制廉价全局探测门控,仅变更时快照,失败静默。
+- **I3**(已修 §7):手工复制 db+wal 撕裂风险 → 改用 SQLite `Connection.backup()` 一致快照。
+- **M1/M5**(已修 §6/§5):`tool` 第三态 `running` 当 ok 不计 error;导出 ts 必须 tz-aware。
+
+**实现期仍需确认:**
+1. `Connection.backup()` 在本机 207MB 库的耗时(全量首次);确认临时快照文件用完清理。
+2. 性能:368 会话、55k parts 的全量导出时长(首次手动跑可接受;增量靠全局探测短路)。
+3. 子会话(282/368 有 parent_id):cwd 各自独立,确认 parent 与 child 不重复归因(加 fixture 测)。
+4. 回填触发:启用后 `sync-opencode`(全量 368)+ `reconcile` + `worker`;成本 ~368 次分析(可临时 Haiku)。
 
 ## 13. 成功标准
 
