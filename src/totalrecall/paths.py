@@ -49,6 +49,14 @@ def analysis_cwd() -> Path:
     return state_dir() / "analysis"
 
 
+def opencode_cache_dir() -> Path:
+    return state_dir() / "opencode-cache"
+
+
+def opencode_sync_path() -> Path:
+    return state_dir() / "opencode-sync.json"
+
+
 def ensure_dirs() -> None:
     for d in (state_dir(), queue_dir(), patterns_dir(), analysis_cwd()):
         d.mkdir(parents=True, exist_ok=True)
