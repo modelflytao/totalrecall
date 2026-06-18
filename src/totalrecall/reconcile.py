@@ -15,6 +15,10 @@ def codex_sessions_dir() -> Path:
     return Path.home() / ".codex" / "sessions"
 
 
+def opencode_cache_dir():
+    return paths.opencode_cache_dir()
+
+
 def _encoded_analysis_dir() -> str:
     # Claude Code encodes a cwd into a project dir name by replacing ':' '\\' '/'
     # AND '.' with '-' (e.g. C:\\Users\\u\\.totalrecall\\analysis ->
@@ -35,6 +39,8 @@ def run(recent_seconds: int = RECENT_SECONDS) -> int:
         sources.append((claude_projects_dir(), _encoded_analysis_dir()))
     if cfg.sources.get("codex"):
         sources.append((codex_sessions_dir(), None))   # codex sessions are never analysis sessions
+    if cfg.sources.get("opencode"):
+        sources.append((opencode_cache_dir(), None))   # exported cache; never analysis sessions
 
     for root, analysis_dir in sources:
         if not root.exists():
