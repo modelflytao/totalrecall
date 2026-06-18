@@ -181,6 +181,16 @@ Codex 会话的摩擦进入**同一个模式库**,在 insights.md 里以 `tool=c
 
 ---
 
+## 多工具:OpenCode
+
+把 `~/.totalrecall/config.toml` 的 `[sources]` 下 `opencode = true` 打开。OpenCode 把会话存在单个 SQLite
+库(`~/.local/share/opencode/opencode.db`),TotalRecall 先用 `totalrecall sync-opencode` 把每个会话**只读**
+导出成 `~/.totalrecall/opencode-cache/<sid>.jsonl`(用 SQLite 一致性快照,绝不写你的库),再走与其它来源相同的
+分析管线。worker 运行时也会先做一次廉价的增量 sync。立刻分析:`totalrecall sync-opencode && totalrecall worker`。
+摩擦以 `tool=opencode` 证据进入同一模式库。
+
+---
+
 ## 存储布局
 
 ```

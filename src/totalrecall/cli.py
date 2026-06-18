@@ -2,7 +2,8 @@ from __future__ import annotations
 import argparse
 import sys
 from . import (hookinstall, worker, reconcile, synth, config, ledger,
-               patterns_store, hookcmd, queue, proposer, applier, proposals_store)
+               patterns_store, hookcmd, queue, proposer, applier, proposals_store,
+               opencode_export)
 
 
 def _cmd_status() -> int:
@@ -52,6 +53,7 @@ def main(argv=None) -> int:
     p_apply = sub.add_parser("apply"); p_apply.add_argument("ids", nargs="+")
     p_reject = sub.add_parser("reject"); p_reject.add_argument("ids", nargs="+")
     sub.add_parser("proposals")
+    sub.add_parser("sync-opencode")
     args = parser.parse_args(argv)
 
     if args.cmd == "init":
@@ -93,6 +95,9 @@ def main(argv=None) -> int:
         print(f"rejected: {applier.reject(args.ids)}"); return 0
     if args.cmd == "proposals":
         return _cmd_proposals()
+    if args.cmd == "sync-opencode":
+        n = opencode_export.sync()
+        print(f"opencode synced: {n}"); return 0
     return 1
 
 
