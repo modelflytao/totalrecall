@@ -223,7 +223,13 @@ def test_export_skips_when_watermark_unchanged(home, tmp_path, monkeypatch):
     monkeypatch.setattr(opencode_export, "opencode_db_path", lambda: db)
     opencode_export.sync()
     # second sync with unchanged db -> watermark short-circuit, returns 0
+    # AND must NOT take the expensive snapshot (spec I2: no heavy I/O when unchanged)
+    snapshots = {"n": 0}
+    real_snap = opencode_export._snapshot
+    monkeypatch.setattr(opencode_export, "_snapshot",
+                        lambda db: (snapshots.__setitem__("n", snapshots["n"] + 1), real_snap(db))[1])
     assert opencode_export.sync() == 0
+    assert snapshots["n"] == 0           # snapshot never created on the unchanged path
 
 
 def test_export_gcs_orphan_cache(home, tmp_path, monkeypatch):
@@ -318,14 +324,24 @@ def sync() -> int:
     db = opencode_db_path()
     if not db.exists():
         return 0
+
+    # CHEAP global watermark probe FIRST, on a read-only connection — no snapshot.
+    # Only if the global max advanced do we pay for the full backup() snapshot.
+    # (Spec I2: never copy the multi-hundred-MB db on the unchanged hot path.)
+    ro = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+    try:
+        row = ro.execute("select max(time_updated) from session").fetchone()
+        global_max = int(row[0]) if row and row[0] is not None else 0
+    finally:
+        ro.close()
+    if global_max <= _load_watermark():
+        return 0                                      # nothing changed globally -> done, no snapshot
+
     snap = _snapshot(db)
+    con = None
     try:
         con = sqlite3.connect(str(snap))
         cur = con.cursor()
-        row = cur.execute("select max(time_updated) from session").fetchone()
-        global_max = int(row[0]) if row and row[0] is not None else 0
-        if global_max <= _load_watermark():
-            return 0                                  # nothing changed globally
 
         cache = paths.opencode_cache_dir()
         cache.mkdir(parents=True, exist_ok=True)
@@ -356,14 +372,29 @@ def sync() -> int:
             lines = [{"type": "meta", "session_id": sid, "cwd": directory or "",
                       "title": title or "", "started_at": _iso(tcreated),
                       "ended_at": _iso(tupdated)}]
+            # buffer consecutive text parts of the SAME message into one turn (spec §5)
+            text_buf = []      # (role, ts, [texts])
+            def _flush():
+                if text_buf:
+                    role, ts0, chunks = text_buf[0]
+                    joined = "\n".join(chunks)
+                    if joined.strip():
+                        lines.append({"type": "text", "ts": ts0, "role": role, "text": joined})
+                    text_buf.clear()
             for mid, tc, pdata in parts_by_session.get(sid, []):
-                made = _part_line(pdata, _iso(tc))
-                if made is None:
+                if pdata.get("type") == "text":
+                    role = "user" if msg_role.get(mid) == "user" else "assistant"
+                    if text_buf and text_buf[0][0] == role:
+                        text_buf[0][2].append(pdata.get("text", ""))
+                    else:
+                        _flush()
+                        text_buf.append((role, _iso(tc), [pdata.get("text", "")]))
                     continue
-                kind, line = made
-                if kind == "text":
-                    line["role"] = "user" if msg_role.get(mid) == "user" else "assistant"
-                lines.append(line)
+                _flush()
+                made = _part_line(pdata, _iso(tc))
+                if made is not None:
+                    lines.append(made[1])
+            _flush()
             (cache / f"{sid}.jsonl").write_text(
                 "\n".join(json.dumps(l, ensure_ascii=False) for l in lines) + "\n",
                 encoding="utf-8")
@@ -374,10 +405,11 @@ def sync() -> int:
             if f.stem not in live_sids:
                 f.unlink()
 
-        _save_watermark(global_max)
+        _save_watermark(global_max)   # only after all sessions written + GC'd (partial-fail safe)
         return written
     finally:
-        con.close()
+        if con is not None:
+            con.close()
         try:
             snap.unlink()
             snap.parent.rmdir()
@@ -877,7 +909,7 @@ Expected: ~368 OpenCode sessions analyzed into the same pattern library; `insigh
 - §6 OpenCodeAdapter (text/tool/patch, tool_error, churn, running→ok, tz from meta, is_analysis_session=False, stats) → Task 4.
 - §7 opencode_export (SQLite `backup()` snapshot, never writes db; global watermark short-circuit; ledger-hash as sole staleness authority; orphan GC; persisted `opencode-sync.json`) → Task 3.
 - §8 for_path `/opencode-cache/` → Task 5; reconcile opencode source + `opencode_cache_dir` → Task 6; `paths.opencode_cache_dir/opencode_sync_path` → Task 2; config `sources.opencode` (already exists) gates → Tasks 6/7.
-- §9 worker inline cheap-probe-gated sync, silent-fail → Task 7 (probe lives inside `opencode_export.sync`; worker wraps in try/except). Backfill 368 manual → Task 8 Step 8.
+- §9 worker inline cheap-probe-gated sync, silent-fail → Task 7 (worker wraps in try/except). **The cheap `max(time_updated)` probe runs on a read-only connection at the TOP of `sync()`, BEFORE any `_snapshot()` — so the unchanged hot path never copies the db** (Task 3; tested by `test_export_skips_when_watermark_unchanged` asserting `_snapshot` is not called). Backfill 368 manual → Task 8 Step 8.
 - §6 I1 merger dedup by session_id (cross-source) → Task 1.
 - §10 testing → Tasks 1-8 (sqlite fixture export, adapter golden fixture, dispatch, reconcile gating, worker sync gating + silent-fail, cli).
 - §12 robustness items: C1 (watermark + hash-only skip) Task 3; C2 (orphan GC) Task 3; I1 (session dedup) Task 1; I2 (probe-gated, silent-fail, no heavy I/O unless changed) Tasks 3+7; I3 (`Connection.backup()`) Task 3; M1 (running→ok) Task 4; M5 (tz-aware ISO via `_iso`) Tasks 3+4.
