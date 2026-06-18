@@ -1,6 +1,7 @@
 from __future__ import annotations
 from .claude_code import ClaudeCodeAdapter
 from .codex import CodexAdapter
+from .opencode import OpenCodeAdapter
 
 
 def for_path(path):
@@ -8,4 +9,6 @@ def for_path(path):
     s = str(path).replace("\\", "/")
     if "/.codex/sessions/" in s:
         return CodexAdapter()
+    if "/opencode-cache/" in s:
+        return OpenCodeAdapter()
     return ClaudeCodeAdapter()
