@@ -71,31 +71,75 @@ def test_different_sessions_counted(home):
     merger.merge([_f("ses_b", "h2")], now="2026-06-11T00:00:00Z")
     p = patterns_store.get("pwsh")
     assert p.occurrences == 2 and len(p.evidence) == 2
+
+def test_same_session_recurrence_after_apply_still_marks_ineffective(home):
+    # HOLE A regression: dedup must NOT skip the post-apply recurrence check.
+    # A grown session re-analyzed after a rule was applied must flip ineffective.
+    from totalrecall.models import Pattern
+    paths.ensure_dirs()
+    patterns_store.save(Pattern(
+        "pwsh", "T", "repeated-correction", "llm", "use pwsh",
+        "2026-06-01T00:00:00Z", "2026-06-05T00:00:00Z", 1, 3,
+        evidence=[Evidence("ses_a", "opencode", [1], "2026-06-05T00:00:00Z", "h1")],
+        applied_at="2026-06-10T00:00:00Z"))
+    recur = Finding("repeated-correction", "use pwsh", 3,
+                    Evidence("ses_a", "opencode", [2], "2026-06-15T00:00:00Z", "h2"), slug="pwsh")
+    merger.merge([recur], now="2026-06-15T00:00:00Z")    # same session, ts > applied_at
+    p = patterns_store.get("pwsh")
+    assert p.status == "ineffective"   # rule didn't work — must be detected even for same session
+    assert p.occurrences == 1          # but not double-counted (I1 preserved)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_merger_session_dedup.py -v`
-Expected: FAIL — `test_same_session_not_double_counted` gets occurrences == 2
+Expected: FAIL — `test_same_session_not_double_counted` gets occurrences == 2; `test_same_session_recurrence_after_apply_still_marks_ineffective` stays `active` (early-return skips the check)
 
 - [ ] **Step 3: Implement**
 
-In `src/totalrecall/merger.py`, in `_apply`, replace:
+In `src/totalrecall/merger.py`, replace the WHOLE `_apply` function body. Replace:
 ```python
+def _apply(p: Pattern, f: Finding, now: str) -> None:
     if any(e.snippet_hash == f.evidence.snippet_hash for e in p.evidence):
         return  # duplicate evidence -> do not double-count
+    p.occurrences += 1
+    p.last_seen = now
+    p.severity = max(p.severity, f.severity)
+    p.evidence.append(f.evidence)
+    if f.phase2_hint and not p.phase2_hint:
+        p.phase2_hint = f.phase2_hint
+    if p.source != f_source(f):
+        p.source = "both"
+    at, et = _ts(p.applied_at), (_ts(f.evidence.ts) or _ts(now))
+    if at and et and et > at:
+        p.status = "ineffective"   # recurred after the fix was applied (overrides resolved)
 ```
 with:
 ```python
-    if any(e.snippet_hash == f.evidence.snippet_hash
-           or e.session_id == f.evidence.session_id for e in p.evidence):
-        return  # dedup by snippet OR session: occurrences = distinct sessions
+def _apply(p: Pattern, f: Finding, now: str) -> None:
+    # Dedup occurrences by snippet OR session (occurrences = distinct sessions, I1).
+    # But do NOT early-return: recency and the post-apply recurrence check must still
+    # run even when the same session is re-analyzed (HOLE A — keeps the Phase-2 loop honest).
+    dup = any(e.snippet_hash == f.evidence.snippet_hash
+              or e.session_id == f.evidence.session_id for e in p.evidence)
+    if not dup:
+        p.occurrences += 1
+        p.evidence.append(f.evidence)
+    p.last_seen = now
+    p.severity = max(p.severity, f.severity)
+    if f.phase2_hint and not p.phase2_hint:
+        p.phase2_hint = f.phase2_hint
+    if p.source != f_source(f):
+        p.source = "both"
+    at, et = _ts(p.applied_at), (_ts(f.evidence.ts) or _ts(now))
+    if at and et and et > at:
+        p.status = "ineffective"   # post-apply recurrence (even same session) overrides resolved
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_merger_session_dedup.py tests/test_merger.py tests/test_merger_phase2.py -v`
-Expected: PASS (new dedup; existing merger tests still green — they use distinct session_ids per finding)
+Expected: PASS (new dedup + ineffective-on-same-session; existing merger tests still green — they use distinct session_ids so the not-dup path is unchanged for them)
 
 - [ ] **Step 5: Commit**
 
@@ -241,6 +285,24 @@ def test_export_gcs_orphan_cache(home, tmp_path, monkeypatch):
     orphan.write_text("stale", encoding="utf-8")
     opencode_export.sync()
     assert not orphan.exists()        # sid not in db -> GC'd
+
+
+def test_first_run_deferred_on_worker_path(home, tmp_path, monkeypatch):
+    # HOLE B: worker-side sync (first_run_ok=False) must NOT snapshot/export when no
+    # watermark exists yet — the cold full backfill is deferred to manual `sync-opencode`.
+    paths.ensure_dirs()
+    db = tmp_path / "opencode.db"; _build_db(db)
+    monkeypatch.setattr(opencode_export, "opencode_db_path", lambda: db)
+    snaps = {"n": 0}
+    real = opencode_export._snapshot
+    monkeypatch.setattr(opencode_export, "_snapshot",
+                        lambda d: (snaps.__setitem__("n", snaps["n"] + 1), real(d))[1])
+    assert opencode_export.sync(first_run_ok=False) == 0   # deferred
+    assert snaps["n"] == 0                                 # no snapshot taken
+    assert not (paths.opencode_cache_dir() / "ses_x.jsonl").exists()
+    # the manual path still does the full export
+    assert opencode_export.sync(first_run_ok=True) >= 1
+    assert (paths.opencode_cache_dir() / "ses_x.jsonl").exists()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -319,31 +381,46 @@ def _part_line(data: dict, ts: str | None):
     return None   # reasoning / step-* / compaction / file / subtask -> skip
 
 
-def sync() -> int:
-    """Export changed OpenCode sessions to opencode-cache/<sid>.jsonl. Returns #written."""
+def sync(first_run_ok: bool = True) -> int:
+    """Export changed OpenCode sessions to opencode-cache/<sid>.jsonl. Returns #written.
+
+    first_run_ok=False (worker hot path): when no watermark exists yet, DEFER the cold full
+    export to the manual `sync-opencode` instead of doing it under the worker lock (HOLE B).
+    """
     db = opencode_db_path()
     if not db.exists():
         return 0
 
-    # CHEAP global watermark probe FIRST, on a read-only connection — no snapshot.
-    # Only if the global max advanced do we pay for the full backup() snapshot.
-    # (Spec I2: never copy the multi-hundred-MB db on the unchanged hot path.)
+    # CHEAP read-only probe FIRST — global watermark + live session ids. No snapshot.
+    # (Spec I2: never copy the multi-hundred-MB db on the unchanged hot path; verified
+    #  ~0.0017s probe vs ~0.82s backup on the real 207MB db.)
     ro = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
     try:
         row = ro.execute("select max(time_updated) from session").fetchone()
         global_max = int(row[0]) if row and row[0] is not None else 0
+        live_sids = {r[0] for r in ro.execute("select id from session").fetchall()}
     finally:
         ro.close()
-    if global_max <= _load_watermark():
+
+    # GC orphan cache files on the CHEAP path — decoupled from the watermark gate, so a
+    # deleted/archived session's cache file is removed even when global_max didn't advance (HOLE C).
+    cache = paths.opencode_cache_dir()
+    if cache.exists():
+        for fp in cache.glob("*.jsonl"):
+            if fp.stem not in live_sids:
+                fp.unlink()
+
+    saved = _load_watermark()
+    if global_max <= saved:
         return 0                                      # nothing changed globally -> done, no snapshot
+    if saved < 0 and not first_run_ok:
+        return 0                                      # first run on the worker hot path -> defer to manual sync (HOLE B)
 
     snap = _snapshot(db)
     con = None
     try:
         con = sqlite3.connect(str(snap))
         cur = con.cursor()
-
-        cache = paths.opencode_cache_dir()
         cache.mkdir(parents=True, exist_ok=True)
 
         # rebuild messages + parts grouped by session
@@ -364,11 +441,9 @@ def sync() -> int:
                 continue
             parts_by_session[sid].append((mid, tc, pdata))
 
-        live_sids = set()
         written = 0
         for sid, directory, title, tcreated, tupdated in cur.execute(
                 "select id, directory, title, time_created, time_updated from session").fetchall():
-            live_sids.add(sid)
             lines = [{"type": "meta", "session_id": sid, "cwd": directory or "",
                       "title": title or "", "started_at": _iso(tcreated),
                       "ended_at": _iso(tupdated)}]
@@ -400,12 +475,8 @@ def sync() -> int:
                 encoding="utf-8")
             written += 1
 
-        # GC orphan cache files (sessions deleted/archived in the db)
-        for f in cache.glob("*.jsonl"):
-            if f.stem not in live_sids:
-                f.unlink()
-
-        _save_watermark(global_max)   # only after all sessions written + GC'd (partial-fail safe)
+        # (orphan GC already ran on the cheap path above, decoupled from this gate)
+        _save_watermark(global_max)   # only after all sessions written (partial-fail safe)
         return written
     finally:
         if con is not None:
@@ -742,21 +813,23 @@ git commit -m "feat: reconcile scans opencode cache dir when sources.opencode en
 ```python
 from totalrecall import worker, paths
 
-def test_sync_called_when_opencode_enabled(home, monkeypatch):
+def test_sync_called_first_run_ok_false_when_enabled(home, monkeypatch):
     paths.ensure_dirs()
     paths.config_path().write_text("[sources]\nopencode = true\n", encoding="utf-8")
-    called = {"n": 0}
-    monkeypatch.setattr(worker.opencode_export, "sync",
-                        lambda: called.__setitem__("n", called["n"] + 1))
+    seen = {"first_run_ok": None, "n": 0}
+    def fake_sync(first_run_ok=True):
+        seen["first_run_ok"] = first_run_ok; seen["n"] += 1; return 0
+    monkeypatch.setattr(worker.opencode_export, "sync", fake_sync)
     monkeypatch.setattr(worker.reconcile, "run", lambda: 0)
     worker.run()
-    assert called["n"] == 1
+    assert seen["n"] == 1
+    assert seen["first_run_ok"] is False   # worker must NOT do the cold backfill (HOLE B)
 
 def test_sync_skipped_when_disabled(home, monkeypatch):
     paths.ensure_dirs()   # default: opencode = false
     called = {"n": 0}
     monkeypatch.setattr(worker.opencode_export, "sync",
-                        lambda: called.__setitem__("n", called["n"] + 1))
+                        lambda first_run_ok=True: called.__setitem__("n", called["n"] + 1))
     monkeypatch.setattr(worker.reconcile, "run", lambda: 0)
     worker.run()
     assert called["n"] == 0
@@ -764,7 +837,7 @@ def test_sync_skipped_when_disabled(home, monkeypatch):
 def test_sync_failure_does_not_abort_worker(home, monkeypatch):
     paths.ensure_dirs()
     paths.config_path().write_text("[sources]\nopencode = true\n", encoding="utf-8")
-    def boom():
+    def boom(first_run_ok=True):
         raise RuntimeError("db locked")
     monkeypatch.setattr(worker.opencode_export, "sync", boom)
     monkeypatch.setattr(worker.reconcile, "run", lambda: 0)
@@ -793,7 +866,9 @@ with:
         cfg = config.load()
         if cfg.sources.get("opencode"):
             try:
-                opencode_export.sync()   # cheap watermark probe inside; silent-fail
+                # incremental only: cheap watermark probe inside; first-run cold backfill
+                # is deferred to the manual `sync-opencode` (HOLE B). Silent-fail.
+                opencode_export.sync(first_run_ok=False)
             except Exception:
                 pass                      # OpenCode db issues must never abort the worker
         reconcile.run()
@@ -913,6 +988,7 @@ Expected: ~368 OpenCode sessions analyzed into the same pattern library; `insigh
 - §6 I1 merger dedup by session_id (cross-source) → Task 1.
 - §10 testing → Tasks 1-8 (sqlite fixture export, adapter golden fixture, dispatch, reconcile gating, worker sync gating + silent-fail, cli).
 - §12 robustness items: C1 (watermark + hash-only skip) Task 3; C2 (orphan GC) Task 3; I1 (session dedup) Task 1; I2 (probe-gated, silent-fail, no heavy I/O unless changed) Tasks 3+7; I3 (`Connection.backup()`) Task 3; M1 (running→ok) Task 4; M5 (tz-aware ISO via `_iso`) Tasks 3+4.
+- **Cross-document review fixes (3rd round, interaction holes):** HOLE A (session dedup must NOT skip the post-apply `ineffective` check) → Task 1 rewrites the whole `_apply` + adds `test_same_session_recurrence_after_apply_still_marks_ineffective`; HOLE B (worker must not do the cold 368-session export under the lock) → `sync(first_run_ok=False)` from the worker defers to manual `sync-opencode`, tested by `test_first_run_deferred_on_worker_path` + Task 7's `first_run_ok is False` assertion; HOLE C (orphan GC unreachable when watermark short-circuits) → GC moved to the cheap read-only path in Task 3, decoupled from the watermark gate.
 
 **Placeholder scan:** none — all code steps carry complete runnable code. Task 8 Step 8 is explicitly operational, not a code step.
 

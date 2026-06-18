@@ -97,7 +97,10 @@ totalrecall sync-opencode (新)                    现有文件管线(不改)
 修正:`merger._apply` 对一个 Pattern 追加证据时,去重键从"仅 snippet_hash"改为 **也按 `session_id` 去重**——
 即同一会话对同一 Pattern 只贡献一次 occurrence(occurrences = 该模式出现过的**不同会话数**)。
 这正是之前手动清理计数时采用的语义。对 CC/Codex 同样正确(重分析罕见,正常情况行为不变),merger 层统一修。
-实现期加回归测试:同一 session_id 的两个 finding(不同 snippet_hash)并入同一 Pattern → occurrences 只 +1。
+**关键(HOLE A):去重只跳过"计数与追加证据",绝不 early-return 跳过 post-apply recurrence 检测**——
+否则一个长大后被重分析的**同一会话**在规则应用后再次出现该摩擦时,`ineffective` 不会触发,
+规则失效会被误报成"已解决"。即:`dup` 时仍更新 last_seen 并运行 `et>applied_at → ineffective` 判定。
+实现期加回归测试:① 同一 session_id 两个 finding → occurrences 只 +1;② 同一 session 在 applied_at 之后复发 → status 翻 `ineffective`。
 
 ## 7. opencode_export 模块
 
@@ -137,7 +140,12 @@ totalrecall sync-opencode (新)                    现有文件管线(不改)
   ② 整个 sync 包 try/except,**失败静默**(记日志),OpenCode 的 DB 问题绝不拖垮/阻断 CC/Codex 处理;
   ③ 热路径本身已天然安全:SessionEnd hook 是 detached spawn worker、立即返回,DB 工作永不阻塞用户会话结束。
   首次**全量导出(368 会话)**较重 → 只由**手动 `sync-opencode`** 承担,不进会话结束触发的 worker 热路径。
-  (注:持锁期间的快照仅在确有变更时发生且单实例串行;偶发数秒可接受,已用廉价探测严格门控。)
+- **首次运行门控(HOLE B 机制)**:`sync(first_run_ok: bool = True)`。worker 调 `sync(first_run_ok=False)`——
+  当**水位文件尚不存在**(从未手动 sync 过)时,**直接返回 0、不做快照、不导出**,把冷启动全量回填留给手动 `sync-opencode`(默认 `first_run_ok=True`)。
+  这样启用 OpenCode 后,worker 热路径绝不会在锁内做 368 会话的冷导出;一次手动 `sync-opencode` 引导后,
+  后续 worker 增量 sync 接管。(实测 backup() 全量 ~0.82s、廉价探测 ~0.0017s,但冷导出含重建 14672 消息/55077 part,仍只走手动。)
+- **孤儿 GC 走廉价路径(HOLE C)**:GC 在廉价只读探测处用 `SELECT id FROM session` 取现存会话集执行,
+  **与水位短路解耦**——即使全局水位未变(删除会话未顶高其它会话的 time_updated),孤儿缓存文件仍被清理。
 - 想立刻分析:手动 `sync-opencode && reconcile && worker`。
 
 ## 10. 测试
@@ -172,8 +180,13 @@ totalrecall sync-opencode (新)                    现有文件管线(不改)
 - **C2**(已修 §7):删除/归档会话留孤儿缓存 → 导出后按现存 session 集 GC 缓存文件。
 - **I1**(已修 §6):重导长大会话致 occurrences 虚高 → merger 证据按 session_id 去重。
 - **I2**(已修 §9):内联 sync 持锁做重 I/O → 强制廉价全局探测门控,仅变更时快照,失败静默。
-- **I3**(已修 §7):手工复制 db+wal 撕裂风险 → 改用 SQLite `Connection.backup()` 一致快照。
+- **I3**(已修 §7):手工复制 db+wal 撕裂风险 → 改用 SQLite `Connection.backup()` 一致快照(实测不写原库、~0.82s)。
 - **M1/M5**(已修 §6/§5):`tool` 第三态 `running` 当 ok 不计 error;导出 ts 必须 tz-aware。
+
+**跨文档审查(第三轮,交互/全链路)又解决:**
+- **HOLE A**(已修 §6):session 去重的 early-return 会**吞掉 Phase-2 ineffective 检测**(同一会话规则后复发被误报"已解决")→ 去重不 early-return,仍跑 ineffective 判定。
+- **HOLE B**(已修 §9):worker 首次运行会在锁内做 368 会话冷导出 → `sync(first_run_ok=False)`,无水位时延迟到手动 sync。
+- **HOLE C**(已修 §9):GC 在水位短路时不可达 → GC 移到廉价只读路径,与水位门控解耦。
 
 **实现期仍需确认:**
 1. `Connection.backup()` 在本机 207MB 库的耗时(全量首次);确认临时快照文件用完清理。
