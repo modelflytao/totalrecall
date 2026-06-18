@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from . import (queue, ledger, config, catalog, merger, render, reconcile,
-               orchestrator, paths, synth, adapters)
+               orchestrator, paths, synth, adapters, opencode_export)
 from .locking import try_worker_lock
 
 
@@ -53,6 +53,13 @@ def run() -> str:
         if not got:
             return "busy"
         cfg = config.load()
+        if cfg.sources.get("opencode"):
+            try:
+                # incremental only: cheap watermark probe inside; first-run cold backfill
+                # is deferred to the manual `sync-opencode` (HOLE B). Silent-fail.
+                opencode_export.sync(first_run_ok=False)
+            except Exception:
+                pass                      # OpenCode db issues must never abort the worker
         reconcile.run()
         analyzed = 0
         # crash-safe loop: claim one job, process, then delete it. If the worker is
