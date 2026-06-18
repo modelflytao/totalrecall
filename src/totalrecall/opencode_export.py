@@ -52,10 +52,8 @@ def _save_watermark(value: int) -> None:
 
 
 def _part_line(data: dict, ts: str | None):
+    # text parts are handled inline in sync() (buffered per message); _part_line covers the rest.
     t = data.get("type")
-    if t == "text":
-        txt = data.get("text", "")
-        return ("text", {"type": "text", "ts": ts, "text": txt}) if txt.strip() else None
     if t == "tool":
         return ("tool", {"type": "tool", "ts": ts, "name": data.get("tool"),
                          "status": (data.get("state") or {}).get("status", "")})
@@ -89,10 +87,13 @@ def sync(first_run_ok: bool = True) -> int:
     # GC orphan cache files on the CHEAP path — decoupled from the watermark gate, so a
     # deleted/archived session's cache file is removed even when global_max didn't advance (HOLE C).
     cache = paths.opencode_cache_dir()
-    if cache.exists():
+    if cache.exists() and live_sids:        # guard: never wipe the whole cache on an empty session set
         for fp in cache.glob("*.jsonl"):
             if fp.stem not in live_sids:
-                fp.unlink()
+                try:
+                    fp.unlink()
+                except OSError:
+                    pass                    # briefly-locked file: GC it next run, don't abort sync
 
     saved = _load_watermark()
     if global_max <= saved:
@@ -132,10 +133,10 @@ def sync(first_run_ok: bool = True) -> int:
                       "title": title or "", "started_at": _iso(tcreated),
                       "ended_at": _iso(tupdated)}]
             # buffer consecutive text parts of the SAME message into one turn (spec §5)
-            text_buf = []      # (role, ts, [texts])
+            text_buf = []      # [(role, mid, ts, [texts])] — single-element while buffering
             def _flush():
                 if text_buf:
-                    role, ts0, chunks = text_buf[0]
+                    role, _mid, ts0, chunks = text_buf[0]
                     joined = "\n".join(chunks)
                     if joined.strip():
                         lines.append({"type": "text", "ts": ts0, "role": role, "text": joined})
@@ -143,11 +144,11 @@ def sync(first_run_ok: bool = True) -> int:
             for mid, tc, pdata in parts_by_session.get(sid, []):
                 if pdata.get("type") == "text":
                     role = "user" if msg_role.get(mid) == "user" else "assistant"
-                    if text_buf and text_buf[0][0] == role:
-                        text_buf[0][2].append(pdata.get("text", ""))
+                    if text_buf and text_buf[0][0] == role and text_buf[0][1] == mid:
+                        text_buf[0][3].append(pdata.get("text", ""))   # same message -> join
                     else:
-                        _flush()
-                        text_buf.append((role, _iso(tc), [pdata.get("text", "")]))
+                        _flush()                                       # new message/role -> new turn
+                        text_buf.append((role, mid, _iso(tc), [pdata.get("text", "")]))
                     continue
                 _flush()
                 made = _part_line(pdata, _iso(tc))

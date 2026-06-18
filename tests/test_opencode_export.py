@@ -93,3 +93,49 @@ def test_first_run_deferred_on_worker_path(home, tmp_path, monkeypatch):
     # the manual path still does the full export
     assert opencode_export.sync(first_run_ok=True) >= 1
     assert (paths.opencode_cache_dir() / "ses_x.jsonl").exists()
+
+
+def test_text_parts_split_per_message(home, tmp_path, monkeypatch):
+    # Two same-role (assistant) messages, each a text part -> TWO turns, not merged (spec §5).
+    paths.ensure_dirs()
+    db = tmp_path / "opencode.db"
+    con = sqlite3.connect(str(db))
+    con.execute("create table session (id text, directory text, title text, "
+                "time_created int, time_updated int, parent_id text)")
+    con.execute("create table message (id text, session_id text, time_created int, data text)")
+    con.execute("create table part (id text, message_id text, session_id text, "
+                "time_created int, data text)")
+    con.execute("insert into session values ('ses_z','D:/w','t',1000,9000,null)")
+    con.execute("insert into message values ('ma','ses_z',1000,?)",
+                (json.dumps({"role": "assistant"}),))
+    con.execute("insert into message values ('mb','ses_z',2000,?)",
+                (json.dumps({"role": "assistant"}),))
+    con.execute("insert into part values ('pa','ma','ses_z',1000,?)",
+                (json.dumps({"type": "text", "text": "first message"}),))
+    con.execute("insert into part values ('pb','mb','ses_z',2000,?)",
+                (json.dumps({"type": "text", "text": "second message"}),))
+    con.commit(); con.close()
+    monkeypatch.setattr(opencode_export, "opencode_db_path", lambda: db)
+    opencode_export.sync()
+    lines = [json.loads(l) for l in
+             (paths.opencode_cache_dir() / "ses_z.jsonl").read_text(encoding="utf-8").splitlines()]
+    texts = [l for l in lines if l["type"] == "text"]
+    assert [t["text"] for t in texts] == ["first message", "second message"]  # two turns, not joined
+
+
+def test_gc_skipped_when_no_live_sessions(home, tmp_path, monkeypatch):
+    # An empty (but openable) session table must NOT wipe existing cache files.
+    paths.ensure_dirs()
+    db = tmp_path / "opencode.db"
+    con = sqlite3.connect(str(db))
+    con.execute("create table session (id text, directory text, title text, "
+                "time_created int, time_updated int, parent_id text)")
+    con.execute("create table message (id text, session_id text, time_created int, data text)")
+    con.execute("create table part (id text, message_id text, session_id text, "
+                "time_created int, data text)")
+    con.commit(); con.close()
+    monkeypatch.setattr(opencode_export, "opencode_db_path", lambda: db)
+    keep = paths.opencode_cache_dir(); keep.mkdir(parents=True, exist_ok=True)
+    (keep / "ses_keep.jsonl").write_text("x", encoding="utf-8")
+    opencode_export.sync()
+    assert (keep / "ses_keep.jsonl").exists()   # not wiped by empty session set
