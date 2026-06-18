@@ -4,7 +4,7 @@
 (反复纠正、误解意图、返工、工具报错……),持续维护一份活的 `~/.totalrecall/insights.md`;
 并能把反复出现的摩擦闭环成对你 `CLAUDE.md` 的规则改进。
 
-支持 **Claude Code** 与 **Codex(OpenAI Codex CLI)** 两种会话来源。
+支持 **Claude Code**、**Codex(OpenAI Codex CLI)** 与 **OpenCode** 三种会话来源。
 
 ---
 
@@ -18,6 +18,7 @@
 - [Phase 1 — 洞察](#phase-1--洞察)
 - [Phase 2 — 规则闭环](#phase-2--规则闭环)
 - [多工具:Codex](#多工具codex)
+- [多工具:OpenCode](#多工具opencode)
 - [存储布局](#存储布局)
 - [停用 / 卸载](#停用--卸载)
 - [实现说明](#实现说明)
