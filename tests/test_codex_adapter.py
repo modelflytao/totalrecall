@@ -43,3 +43,14 @@ def test_stats():
 def test_garbage_line_skipped():
     s = _parse()
     assert len(s.turns) == 3   # parsed despite trailing garbage
+
+def test_first_session_meta_wins_on_resume(tmp_path):
+    f = tmp_path / "resumed.jsonl"
+    f.write_text(
+        '{"timestamp":"2026-05-30T19:31:57Z","type":"session_meta","payload":{"id":"orig-001","cwd":"D:/work/a"}}\n'
+        '{"timestamp":"2026-05-30T19:32:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}\n'
+        '{"timestamp":"2026-05-30T19:33:00Z","type":"session_meta","payload":{"id":"fork-002","cwd":"D:/work/b"}}\n',
+        encoding="utf-8")
+    s = CodexAdapter().parse(f)
+    assert s.session_id == "orig-001"   # first session_meta, not the later fork
+    assert s.cwd == "D:/work/a"

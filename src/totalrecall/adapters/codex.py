@@ -55,8 +55,10 @@ class CodexAdapter:
             if not isinstance(p, dict):
                 continue
             if typ == "session_meta":
-                session_id = p.get("id") or session_id
-                cwd = p.get("cwd") or cwd
+                # first session_meta wins (resumed/forked sessions carry several;
+                # the first is the canonical session id/cwd, avoiding id collisions)
+                session_id = session_id or (p.get("id") or "")
+                cwd = cwd or (p.get("cwd") or "")
                 continue
             ptype = p.get("type")
             if typ == "event_msg":
