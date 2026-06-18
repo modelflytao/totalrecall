@@ -1,0 +1,8 @@
+{"type":"meta","session_id":"ses_x","cwd":"D:/work/demo","title":"t","started_at":"2026-06-10T10:00:00+00:00","ended_at":"2026-06-10T10:05:00+00:00"}
+{"type":"text","role":"user","ts":"2026-06-10T10:00:00+00:00","text":"use PowerShell not bash"}
+{"type":"text","role":"assistant","ts":"2026-06-10T10:00:05+00:00","text":"ok"}
+{"type":"tool","ts":"2026-06-10T10:00:06+00:00","name":"bash","status":"error"}
+{"type":"tool","ts":"2026-06-10T10:00:07+00:00","name":"read","status":"running"}
+{"type":"patch","ts":"2026-06-10T10:00:08+00:00","files":["D:/work/demo/a.py"]}
+{"type":"patch","ts":"2026-06-10T10:00:09+00:00","files":["D:/work/demo/a.py","D:/work/demo/a.py"]}
+not-json-garbage
