@@ -40,19 +40,23 @@ def _find_target(f: Finding, existing: list[Pattern]) -> Pattern | None:
 
 
 def _apply(p: Pattern, f: Finding, now: str) -> None:
-    if any(e.snippet_hash == f.evidence.snippet_hash for e in p.evidence):
-        return  # duplicate evidence -> do not double-count
-    p.occurrences += 1
+    # Dedup occurrences by snippet OR session (occurrences = distinct sessions, I1).
+    # But do NOT early-return: recency and the post-apply recurrence check must still
+    # run even when the same session is re-analyzed (HOLE A — keeps the Phase-2 loop honest).
+    dup = any(e.snippet_hash == f.evidence.snippet_hash
+              or e.session_id == f.evidence.session_id for e in p.evidence)
+    if not dup:
+        p.occurrences += 1
+        p.evidence.append(f.evidence)
     p.last_seen = now
     p.severity = max(p.severity, f.severity)
-    p.evidence.append(f.evidence)
     if f.phase2_hint and not p.phase2_hint:
         p.phase2_hint = f.phase2_hint
     if p.source != f_source(f):
         p.source = "both"
     at, et = _ts(p.applied_at), (_ts(f.evidence.ts) or _ts(now))
     if at and et and et > at:
-        p.status = "ineffective"   # recurred after the fix was applied (overrides resolved)
+        p.status = "ineffective"   # post-apply recurrence (even same session) overrides resolved
 
 
 def f_source(f: Finding) -> str:
