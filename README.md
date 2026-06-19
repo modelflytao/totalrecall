@@ -54,19 +54,21 @@ totalrecall init      # 创建 ~/.totalrecall/ 并把 SessionEnd hook 合并进 
 
 ```
 会话结束
-  │  Claude Code: SessionEnd hook(原生);Codex: 无 hook → 靠 reconcile 兜底
+  │  Claude Code: SessionEnd hook(原生);Codex/OpenCode: 无 hook → 靠 reconcile 兜底
   ▼
 totalrecall hook  ── 把 transcript 路径写入队列, 立即返回(非阻塞, 失败静默)
   │  并 detached 拉起 worker
   ▼
 totalrecall worker (单实例锁, crash-safe 队列)
+  ├─ [OpenCode 启用时] 廉价探测门控的增量 sync-opencode(DB→缓存)
   ├─ reconcile: 扫各来源目录, 把"比 ledger 新且已静置"的会话补入队
   ├─ adapters.for_path(p).parse(p) → NormalizedSession(工具无关)
   │     · Claude Code: ~/.claude/projects/.../<sid>.jsonl
   │     · Codex:       ~/.codex/sessions/.../rollout-*.jsonl
+  │     · OpenCode:    ~/.totalrecall/opencode-cache/<sid>.jsonl(从 SQLite 导出)
   ├─ 确定性抽取 A 类信号(工具报错 / 文件返工 churn / 中断 …)
   ├─ claude -p 语义分析 B 类摩擦 → 结构化 Finding(JSON)
-  ├─ merge: 并入持久"模式库"(去重 / 累加 occurrences / 强化)
+  ├─ merge: 并入持久"模式库"(按 session 去重 / 累加 occurrences / 强化)
   └─ 渲染 insights.md(聚焦反复出现的摩擦, 折叠一次性长尾)
 ```
 
@@ -87,6 +89,7 @@ totalrecall worker (单实例锁, crash-safe 队列)
 | `totalrecall ingest <path>` | 分析单个 transcript(持锁,供手动/调试) |
 | `totalrecall retry` | 重试 ledger 中标记 `pending`(分析失败)的会话 |
 | `totalrecall synth` | 用强模型合并近似重复的模式,重写 insights 叙事 |
+| `totalrecall sync-opencode` | 把 OpenCode 的 SQLite 库**只读**导出成缓存文件(供分析;`sources.opencode` 启用时用) |
 | `totalrecall hook` | SessionEnd hook 入口(读 stdin 的 hook 负载;由 Claude Code 调用,一般不手动跑) |
 | `totalrecall propose` | (Phase 2)为 top 反复摩擦起草 CLAUDE.md 规则 → `proposals.md` |
 | `totalrecall apply <id...>` | (Phase 2)把指定提案写进受管 rules 文件 + CLAUDE.md `@import`,并记 `applied_at` |
@@ -133,7 +136,7 @@ claude_md  = "~/.claude/CLAUDE.md"              # 注入 @import 的目标
 - **🔁 反复出现的摩擦**(≥2 个不同会话,按类别;一次性长尾折叠成计数)
 - **🧰 给 Phase 2 的候选改进**(每条反复摩擦的可落地建议)
 
-每条摩擦可溯源到具体会话证据(`tool=claude-code` 或 `tool=codex`)。
+每条摩擦可溯源到具体会话证据(`tool=claude-code` / `codex` / `opencode`)。
 
 > 提示:批量回填历史会话后,如果 worker 期间反复扫到同一个**正在进行**的会话,计数可能被抬高。
 > 跑一次 `totalrecall synth` 合并近似模式即可清理。
@@ -205,6 +208,8 @@ Codex 会话的摩擦进入**同一个模式库**,在 insights.md 里以 `tool=c
   insights.md          # 唯一面向你的洞察出口
   proposals.json       # (Phase 2)提案工作流状态
   proposals.md         # (Phase 2)提案人读视图
+  opencode-cache/      # (OpenCode)从 SQLite 导出的 <sid>.jsonl 缓存
+  opencode-sync.json   # (OpenCode)增量导出水位
   analysis/            # 分析用 claude -p 会话的 cwd(用于自吞排除)
   log                  # worker / hook 日志
 
@@ -229,7 +234,8 @@ Codex 会话的摩擦进入**同一个模式库**,在 insights.md 里以 `tool=c
 
 - 纯 Python 薄 CLI + 一个 `totalrecall-analyze` 分析 skill(经 `claude -p` 调用)+ 一个 `totalrecall-propose` 提案 skill。
 - 确定性层全部有 pytest 单测(适配器、台账、队列锁、合并、strength、渲染、闭环 verifier、CLI);真实 `claude -p` 仅在分析/提案两处,测试中以注入的 fake runner 替代。
-- 适配器可插拔:`adapters/base.py` 定义协议,`claude_code.py` / `codex.py` 各实现,`adapters.for_path()` 按来源目录路由。新增工具 = 加一个适配器。
-- 健壮性:非阻塞 hook、单实例 worker 锁、crash-safe 队列(逐个 claim/complete)、reconcile 跳过进行中会话、prompt 截断、CLAUDE.md 写入幂等+备份。
+- 适配器可插拔:`adapters/base.py` 定义协议,`claude_code.py` / `codex.py` / `opencode.py` 各实现,`adapters.for_path()` 按来源目录路由。新增工具 = 加一个适配器。
+- OpenCode 是 SQLite 库(非 per-file),用 `opencode_export` 以 `Connection.backup()` 一致快照**只读**导出成缓存文件,复用同一文件管线;DB 复杂度隔离在导出一处。
+- 健壮性:非阻塞 hook、单实例 worker 锁、crash-safe 队列(逐个 claim/complete)、reconcile 跳过进行中会话、按 session 去重 occurrences、prompt 截断、CLAUDE.md 写入幂等+备份、导出绝不写用户 DB。
 
 运行测试:`python -m pytest -q`
