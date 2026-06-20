@@ -1,5 +1,7 @@
 # TotalRecall
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 从你和 AI 工具的会话里学习。每当一个会话结束,TotalRecall 在本地分析 transcript,抽取**协作摩擦**
 (反复纠正、误解意图、返工、工具报错……),持续维护一份活的 `~/.totalrecall/insights.md`;
 并能把反复出现的摩擦闭环成对你 `CLAUDE.md` 的规则改进。
