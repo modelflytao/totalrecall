@@ -30,7 +30,8 @@
 需要 Python ≥ 3.11,以及已登录的 `claude` CLI(分析靠 headless `claude -p`,复用你现有的订阅/授权)。
 
 ```bash
-cd /path/to/totalrecall
+git clone https://github.com/modelflytao/totalrecall.git
+cd totalrecall
 pip install -e .
 totalrecall init      # 创建 ~/.totalrecall/ 并把 SessionEnd hook 合并进 ~/.claude/settings.json
 ```
